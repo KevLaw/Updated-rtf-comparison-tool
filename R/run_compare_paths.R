@@ -51,6 +51,20 @@ clean_path <- function(p) {
 }
 
 say <- function(...) cat(..., "\n", sep = "")
+windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+
+CHANGE_RTF_PROMPT <- paste0(
+  "Would you like a separate set of RTF tables generated showing only the ",
+  "differences or no differences identified line by line?")
+
+want_change_rtfs <- function() {
+  preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
+  if (preset %in% c("y", "yes", "true", "1")) return(TRUE)
+  if (preset %in% c("n", "no", "false", "0")) return(FALSE)
+  if (!windows_mode) return(FALSE)
+  answer <- tolower(clean_path(ask(paste0("\n", CHANGE_RTF_PROMPT, " (y/N): "))))
+  answer %in% c("y", "yes")
+}
 
 # default comparison options, shown in the report header
 OPTS <- "num_tol=0, rel_tol=FALSE, trim=TRUE, collapse_space=TRUE, casefold=FALSE"
@@ -108,9 +122,11 @@ repeat {
   say("Leave a path blank to quit.")
   say("")
 
-  f1 <- clean_path(ask("File 1 (reference)  : "))
+  f1_label <- if (windows_mode) "File 1 (Set 1) : " else "File 1 (reference)  : "
+  f2_label <- if (windows_mode) "File 2 (Set 2) : " else "File 2 (comparison) : "
+  f1 <- clean_path(ask(f1_label))
   if (!nzchar(f1)) { say("\nNo path entered - exiting."); break }
-  f2 <- clean_path(ask("File 2 (comparison) : "))
+  f2 <- clean_path(ask(f2_label))
   if (!nzchar(f2)) { say("\nNo path entered - exiting."); break }
 
   if (!file.exists(f1)) {
@@ -143,6 +159,17 @@ repeat {
                          report_saved = paste(saved, collapse = "; ")),
         error = function(e) { say("WARNING: could not update audit log: ", conditionMessage(e)); NA })
       if (!is.na(audit_path)) say("Audit log updated: ", audit_path)
+
+      if (want_change_rtfs()) {
+        change_files <- tryCatch(
+          write_change_rtf_pair(f1, f2, res, root),
+          error = function(e) { say("WARNING: could not generate RTF change tables: ",
+                                    conditionMessage(e)); NULL })
+        if (!is.null(change_files)) {
+          say("RTF change tables saved:")
+          for (p in change_files$output) say("  ", p)
+        }
+      }
     }
   }
 

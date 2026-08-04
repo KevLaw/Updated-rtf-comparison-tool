@@ -49,8 +49,10 @@ WHAT YOU NEED
         - click the tool's window and paste (right-click or Ctrl+V),
           and press Enter.
 
-      File 1 (reference)  : <paste the first path>   [Enter]
-      File 2 (comparison) : <paste the second path>  [Enter]
+      File 1 (Set 1) : <paste the first path>   [Enter]
+      File 2 (Set 2) : <paste the second path>  [Enter]
+
+  The first file you select is always Set 1. The second is always Set 2.
 
   Backslash paths and the surrounding quotes are both fine. The result
   appears immediately on screen:
@@ -67,6 +69,50 @@ WHAT YOU NEED
   and only that file is written. (TXT = the full report; CSV = just the
   differences, for Excel.)
 
+  At the end it also asks:
+
+        "Would you like a separate set of RTF tables generated showing only
+         the differences or no differences identified line by line?"
+
+  Answer Yes to create a true change table in the style of each source RTF.
+  The calculation direction is always Set 2 minus Set 1. Both generated RTFs
+  contain the same aligned rows and results, while each keeps its source page
+  setup, headings, table layout, spacing, and footnote styling as closely as
+  possible.
+
+  The table number gets "_Change". Each original column header gets either
+  "Change" or "NC" on a new line. A header says "NC" only when every body
+  cell in that column is NC; otherwise it says "Change".
+
+  Generated data cells contain only:
+      NC                         source values are equal
+      (+5, -1%)                  count and displayed-percentage change
+      +1.5                       plain numeric change
+      CHG                        changed value is not one scalar number
+      ONLY IN SET 1 / SET 2      row exists in only one set
+
+  Results use up to two significant figures. The percentage calculation uses
+  the percentages printed in the source cells. Example: 45 (5%) in Set 1 and
+  50 (4%) in Set 2 becomes (+5, -1%). This is 4% minus 5%; it is NOT a
+  relative-rate calculation. If counts are equal, the result is NC even if
+  the printed percentages differ.
+
+  Rows are matched by their exact displayed Column 1 descriptions. Repeated
+  descriptions are paired in occurrence order within their section. A row in
+  only one set is inserted into both output tables at its aligned location,
+  and Column 1 is marked "(ONLY IN SET 1)" or "(ONLY IN SET 2)".
+
+  Footnotes in both outputs use the Set 2 text. Whitespace-only differences,
+  tabs, and spacing around punctuation or hyphens are ignored. Materially
+  changed Set 2 character spans are put in parentheses; deleted Set 1 text is
+  shown as "(missing)". The heading "Footnote changes in brackets" appears
+  only when there is a material footnote change.
+
+  Files keep their original name with "_change" before .rtf and are saved in:
+
+        logs\RTF Changes\Set 1\
+        logs\RTF Changes\Set 2\
+
   It then asks "Compare another pair? (y/N)" so you can keep going.
   Works with ANY two RTF files anywhere on the computer.
 
@@ -80,8 +126,8 @@ WHAT YOU NEED
 
         2c-Compare-Folders.bat
 
-  Two folder pickers open. Choose the FIRST (reference) folder, then the
-  SECOND (comparison) folder. The tool compares EVERY .rtf file in the first
+  Two folder pickers open. Choose the FIRST folder (Set 1), then the
+  SECOND folder (Set 2). The tool compares EVERY .rtf file in the first
   folder against the file of the SAME NAME in the second folder.
 
   You get ONE report that lists EVERY file - including the ones that are
@@ -90,6 +136,12 @@ WHAT YOU NEED
   flagged. The full report is saved automatically inside the tool's
   "logs\reports" folder, and you are also offered a Save dialog to keep your
   own copy wherever you like.
+
+  At the end, the same RTF change-table question appears. Answer Yes to
+  create Set 1 and Set 2 change tables for every successfully paired file,
+  including files with no differences. The same calculation, row alignment,
+  header, and footnote rules described in Step 2 apply. Unmatched or unreadable
+  files remain listed in the batch report but do not get a change RTF.
 
   (The two folders must use matching file names so files can be paired.)
 
@@ -150,7 +202,7 @@ WHAT YOU NEED
 ------------------------------------------------------------------------
   2b-Compare-Using-File-Picker.bat  Pick files in a dialog instead of paths.
   2c-Compare-Folders.bat            Batch-compare two whole folders.
-  3-Run-Tests.bat                   Built-in test suite ("171 passed").
+  3-Run-Tests.bat                   Built-in test suite (must show 0 failures).
   4-Generate-Test-Data.bat          Creates sample RTF files to practice on.
   5-View-Audit-Log.bat              Open the audit log (logs\audit_log.csv).
 

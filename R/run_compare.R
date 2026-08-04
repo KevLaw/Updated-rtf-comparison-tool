@@ -2,8 +2,8 @@
 # =============================================================================
 # run_compare.R  --  point-and-click RTF comparison (no typing required)
 # =============================================================================
-# Opens two file-picker dialogs (choose the reference file, then the comparison
-# file), compares them, saves a timestamped text report and CSV next to the
+# Opens two file-picker dialogs (choose Set 1 first, then Set 2), compares the
+# files, saves a timestamped text report and CSV next to the
 # first file, opens the report, and shows a pop-up with the result.
 #
 # This is the easiest way to use the tool. Double-click the launcher for your
@@ -37,6 +37,11 @@ have_tcltk <- requireNamespace("tcltk", quietly = TRUE) &&
                   error = function(e) FALSE))
 
 say <- function(...) cat(..., "\n", sep = "")
+windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+
+CHANGE_RTF_PROMPT <- paste0(
+  "Would you like a separate set of RTF tables generated showing only the ",
+  "differences or no differences identified line by line?")
 
 pick_file <- function(title) {
   if (have_tcltk) {
@@ -86,8 +91,12 @@ preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_FILE
 if (nzchar(preset1)) {
   file1 <- preset1
 } else {
-  say("A file picker will open. Choose the FIRST (reference) file.")
-  file1 <- pick_file("Step 1 of 2: choose the FIRST (reference) RTF file")
+  first_desc <- if (windows_mode) "FIRST file (Set 1)" else "FIRST (reference) file"
+  first_title <- if (windows_mode)
+    "Step 1 of 2: choose the FIRST RTF file (Set 1)" else
+    "Step 1 of 2: choose the FIRST (reference) RTF file"
+  say("A file picker will open. Choose the ", first_desc, ".")
+  file1 <- pick_file(first_title)
 }
 if (is.na(file1) || !nzchar(file1)) {
   say("\nCancelled - no first file selected. Exiting."); quit(status = 0L) }
@@ -96,8 +105,12 @@ say("  File 1: ", file1)
 if (nzchar(preset2)) {
   file2 <- preset2
 } else {
-  say("\nNow choose the SECOND (comparison) file.")
-  file2 <- pick_file("Step 2 of 2: choose the SECOND (comparison) RTF file")
+  second_desc <- if (windows_mode) "SECOND file (Set 2)" else "SECOND (comparison) file"
+  second_title <- if (windows_mode)
+    "Step 2 of 2: choose the SECOND RTF file (Set 2)" else
+    "Step 2 of 2: choose the SECOND (comparison) RTF file"
+  say("\nNow choose the ", second_desc, ".")
+  file2 <- pick_file(second_title)
 }
 if (is.na(file2) || !nzchar(file2)) {
   say("\nCancelled - no second file selected. Exiting."); quit(status = 0L) }
@@ -171,6 +184,33 @@ audit_path <- tryCatch(
                    total_diffs = result$n_diffs, report_saved = saved_path),
   error = function(e) { say("WARNING: could not update audit log: ", conditionMessage(e)); NA })
 if (!is.na(audit_path)) say("Audit log updated: ", audit_path)
+
+# --- optional RTF change tables (Windows workflow) --------------------------
+generate_changes <- FALSE
+change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
+if (change_preset %in% c("y", "yes", "true", "1")) {
+  generate_changes <- TRUE
+} else if (!change_preset %in% c("n", "no", "false", "0") &&
+           windows_mode && gui_mode && have_tcltk) {
+  ans <- tryCatch(as.character(tcltk::tkmessageBox(
+    title = "Generate RTF change tables?", icon = "question", type = "yesno",
+    message = CHANGE_RTF_PROMPT)), error = function(e) "no")
+  generate_changes <- identical(ans, "yes")
+}
+if (generate_changes) {
+  change_files <- tryCatch(
+    write_change_rtf_pair(file1, file2, result, root),
+    error = function(e) { say("WARNING: could not generate RTF change tables: ",
+                              conditionMessage(e)); NULL })
+  if (!is.null(change_files)) {
+    say("RTF change tables saved:")
+    for (p in change_files$output) say("  ", p)
+    if (gui_mode) popup(
+      "RTF change tables saved",
+      paste0("The Set 1 and Set 2 RTF change tables were saved under:\n\n",
+             file.path(root, "logs", "RTF Changes")), equivalent = TRUE)
+  }
+}
 
 say("\nDone.")
 quit(status = if (isTRUE(result$equivalent)) 0L else 1L)

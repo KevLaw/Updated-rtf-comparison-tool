@@ -1,0 +1,147 @@
+name: Windows R validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  windows-r-validation:
+    name: Windows R validation
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    env:
+      RTF_GENERATE_CHANGES: "yes"
+      RTF_TOOL_ROOT: ${{ github.workspace }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install required R packages
+        shell: pwsh
+        run: |
+          # Use the Windows binary repository configured by setup-r. The
+          # end-user installer is then run as an idempotence/availability check
+          # without depending on a second CRAN download path.
+          Rscript -e 'install.packages(c("striprtf", "diffdf", "data.table", "testthat", "optparse"), repos = Sys.getenv("RSPM"))'
+          Rscript R/install_packages.R
+
+      - name: Run full test suite
+        shell: pwsh
+        run: Rscript R/run_tests.R
+
+      - name: Prepare runner fixtures
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ".ci/set1", ".ci/set2" | Out-Null
+          Copy-Item "examples/clinical_table_base.rtf" ".ci/set1/table.rtf"
+          Copy-Item "examples/clinical_table_changed.rtf" ".ci/set2/table.rtf"
+
+      - name: Exercise path runner without dialogs
+        shell: pwsh
+        run: |
+          $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
+          $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
+          @($set1, $set2, "", "") | Set-Content -Encoding utf8 ".ci/path-input.txt"
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList "R/run_compare_paths.R" `
+            -RedirectStandardInput ".ci/path-input.txt" -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
+          if ($status -ne 1) {
+            throw "Path runner returned $status; expected 1 for known differences."
+          }
+          $expected = @(
+            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path $path)) { throw "Missing path-runner output: $path" }
+          }
+
+      - name: Exercise file-picker runner without dialogs
+        shell: pwsh
+        run: |
+          $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
+          $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList @("R/run_compare.R", $set1, $set2) `
+            -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
+          if ($status -ne 1) {
+            throw "File-picker runner returned $status; expected 1 for known differences."
+          }
+          $expected = @(
+            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path $path)) { throw "Missing picker-runner output: $path" }
+          }
+
+      - name: Exercise folder runner without dialogs
+        shell: pwsh
+        run: |
+          $set1 = (Resolve-Path ".ci/set1").Path
+          $set2 = (Resolve-Path ".ci/set2").Path
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList @("R/run_compare_folder.R", $set1, $set2) `
+            -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
+          if ($status -ne 1) {
+            throw "Folder runner returned $status; expected 1 for known differences."
+          }
+          $expected = @(
+            "logs/RTF Changes/Set 1/table_change.rtf",
+            "logs/RTF Changes/Set 2/table_change.rtf"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path $path)) { throw "Missing folder-runner output: $path" }
+          }
+
+      - name: Reparse and validate generated Windows RTFs
+        shell: pwsh
+        run: |
+          @'
+          source("R/compare_rtf.R")
+
+          outputs <- c(
+            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf",
+            "logs/RTF Changes/Set 1/table_change.rtf",
+            "logs/RTF Changes/Set 2/table_change.rtf"
+          )
+
+          stopifnot(all(file.exists(outputs)))
+          for (path in outputs) {
+            parsed <- parse_rtf(path)
+            stopifnot(nrow(parsed) > 0L)
+            stopifnot(any(parsed$raw_value == "Table 14.3.1.2_Change"))
+
+            headache_rows <- unique(parsed$row_index[trimws(parsed$raw_value) == "Headache"])
+            stopifnot(length(headache_rows) >= 1L)
+            headache <- parsed[parsed$row_index == headache_rows[[1]], ]
+            stopifnot(headache$raw_value[headache$col_index == 2L] == "(+1, +0.5%)")
+            stopifnot(headache$raw_value[headache$col_index == 3L] == "NC")
+
+            stopifnot(any(parsed$raw_value == "Footnote changes in brackets"))
+            changed_footnote <- parsed$raw_value[
+              grepl("Generated by Lawlor Solutions", parsed$raw_value, fixed = TRUE)
+            ]
+            stopifnot(length(changed_footnote) == 1L)
+            stopifnot(grepl("\\(|\\)", changed_footnote))
+          }
+          '@ | Set-Content -Encoding utf8 ".ci/validate_generated_rtfs.R"
+
+          Rscript ".ci/validate_generated_rtfs.R"

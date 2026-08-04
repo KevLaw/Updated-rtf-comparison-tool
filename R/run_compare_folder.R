@@ -2,7 +2,7 @@
 # =============================================================================
 # run_compare_folder.R  --  BATCH compare two FOLDERS of RTF files (file picker)
 # =============================================================================
-# Pick a reference folder and a comparison folder. The tool compares every .rtf
+# Pick the Set 1 folder first and the Set 2 folder second. The tool compares every .rtf
 # file in the first folder against the same-named file in the second folder and
 # produces ONE report listing every file -- including the ones that are
 # EQUIVALENT -- so the run is a complete QC record.
@@ -48,6 +48,11 @@ have_tcltk <- requireNamespace("tcltk", quietly = TRUE) &&
                   error = function(e) FALSE))
 
 say <- function(...) cat(..., "\n", sep = "")
+windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+
+CHANGE_RTF_PROMPT <- paste0(
+  "Would you like a separate set of RTF tables generated showing only the ",
+  "differences or no differences identified line by line?")
 
 pick_folder <- function(title) {
   if (have_tcltk) {
@@ -100,8 +105,9 @@ preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_DIR2
 if (nzchar(preset1)) {
   dir1 <- preset1
 } else {
-  say("A folder picker will open. Choose the FIRST (reference) folder.")
-  dir1 <- pick_folder("Step 1 of 2: choose the FIRST (reference) folder of RTF files")
+  first_desc <- if (windows_mode) "FIRST folder (Set 1)" else "FIRST (reference) folder"
+  say("A folder picker will open. Choose the ", first_desc, ".")
+  dir1 <- pick_folder(paste0("Step 1 of 2: choose the ", first_desc, " of RTF files"))
 }
 if (is.na(dir1) || !nzchar(dir1)) {
   say("\nCancelled - no first folder selected. Exiting."); quit(status = 0L) }
@@ -110,8 +116,9 @@ say("  Folder 1: ", dir1)
 if (nzchar(preset2)) {
   dir2 <- preset2
 } else {
-  say("\nNow choose the SECOND (comparison) folder.")
-  dir2 <- pick_folder("Step 2 of 2: choose the SECOND (comparison) folder of RTF files")
+  second_desc <- if (windows_mode) "SECOND folder (Set 2)" else "SECOND (comparison) folder"
+  say("\nNow choose the ", second_desc, ".")
+  dir2 <- pick_folder(paste0("Step 2 of 2: choose the ", second_desc, " of RTF files"))
 }
 if (is.na(dir2) || !nzchar(dir2)) {
   say("\nCancelled - no second folder selected. Exiting."); quit(status = 0L) }
@@ -208,6 +215,35 @@ if (gui_mode && have_tcltk) {
       if (ok) { say("Saved your copy: ", dest); open_path(dest) }
     }
   }
+}
+
+# --- optional per-source RTF change tables (Windows workflow) ---------------
+generate_changes <- FALSE
+change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
+if (change_preset %in% c("y", "yes", "true", "1")) {
+  generate_changes <- TRUE
+} else if (!change_preset %in% c("n", "no", "false", "0") &&
+           windows_mode && gui_mode && have_tcltk) {
+  ans <- tryCatch(as.character(tcltk::tkmessageBox(
+    title = "Generate RTF change tables?", icon = "question", type = "yesno",
+    message = CHANGE_RTF_PROMPT)), error = function(e) "no")
+  generate_changes <- identical(ans, "yes")
+}
+if (generate_changes) {
+  change_files <- write_batch_change_rtfs(batch, root)
+  successes <- change_files[change_files$ok, , drop = FALSE]
+  failures <- change_files[!change_files$ok, , drop = FALSE]
+  if (nrow(successes) > 0L) {
+    say("RTF change tables saved under:")
+    say("  ", file.path(root, "logs", "RTF Changes"))
+  }
+  if (nrow(failures) > 0L) {
+    for (msg in failures$error) say("WARNING: ", msg)
+  }
+  if (gui_mode && nrow(successes) > 0L) popup(
+    "RTF change tables saved",
+    paste0(nrow(successes), " RTF change table(s) were saved under:\n\n",
+           file.path(root, "logs", "RTF Changes")), equivalent = nrow(failures) == 0L)
 }
 
 say("\nDone.")
