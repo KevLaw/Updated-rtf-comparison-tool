@@ -23,13 +23,30 @@ write_one_cell_rtf <- function(path, value) {
   )
   writeLines(lines, path, useBytes = TRUE)
 }
+write_content_match_rtf <- function(path, title, descriptions) {
+  row <- function(values) c(
+    "\\trowd\\trgaph108\\trleft0\\cellx6000\\cellx12000",
+    paste0("\\pard\\intbl\\plain\\f0\\fs18 ", values[[1]], "\\cell"),
+    paste0("\\pard\\intbl\\plain\\f0\\fs18 ", values[[2]], "\\cell\\row"))
+  lines <- c(
+    "{\\rtf1\\ansi\\ansicpg1252\\deff0",
+    "{\\fonttbl{\\f0\\fnil\\fcharset0 Courier New;}}",
+    paste0("\\pard\\plain\\f0\\fs18 ", title, "\\par"),
+    row(c("Description", "Value")),
+    unlist(lapply(descriptions, function(x) row(c(x, "1"))), use.names = FALSE),
+    "}"
+  )
+  writeLines(lines, path, useBytes = TRUE)
+}
 
 test_that("every file is reported, including ones with NO differences", {
   p <- new_pair("mixed")
   put(p$d1, "same.rtf",  "identical_A.rtf");  put(p$d2, "same.rtf",  "identical_B.rtf")
   put(p$d1, "diff.rtf",  "value_diff_A.rtf"); put(p$d2, "diff.rtf",  "value_diff_B.rtf")
-  put(p$d1, "only1.rtf", "identical_A.rtf")                       # missing from folder 2
-  put(p$d2, "only2.rtf", "identical_B.rtf")                       # missing from folder 1
+  write_content_match_rtf(file.path(p$d1, "only1.rtf"), "Adverse Events",
+                          c("Headache", "Nausea"))
+  write_content_match_rtf(file.path(p$d2, "only2.rtf"), "Demographics",
+                          c("Age", "Sex"))
 
   b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
 
@@ -82,6 +99,211 @@ test_that("batch pairing recognizes filenames with case and edge-space differenc
   expect_equal(b$summary$status, "EQUIVALENT")
   expect_match(b$summary$note, "filename normalization")
   expect_equal(b$totals$n_only1 + b$totals$n_only2, 0L)
+})
+
+test_that("batch pairing recognizes the requested like-name example", {
+  p <- new_pair("fuzzy_requested_example")
+  name1 <- "s0ae0by0outcompe0sei.rtf"
+  name2 <- "s0ae0by0outcompe0aeosi.rtf"
+  put(p$d1, name1, "value_diff_A.rtf")
+  put(p$d2, name2, "value_diff_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_equal(nrow(b$summary), 1L)
+  expect_equal(b$summary$file, name1)
+  expect_equal(b$summary$status, "DIFFERENCES")
+  expect_match(b$summary$note, name2, fixed = TRUE)
+  expect_match(b$summary$note, "edit distance 3", fixed = TRUE)
+  expect_match(b$summary$note, "86.4%", fixed = TRUE)
+  expect_equal(b$totals$n_only1 + b$totals$n_only2, 0L)
+  expect_equal(b$results[[name1]]$file2_name, name2)
+})
+
+test_that("a unique one-letter difference in long filenames is paired", {
+  p <- new_pair("fuzzy_one_letter")
+  put(p$d1, "subject_outcome_a.rtf", "identical_A.rtf")
+  put(p$d2, "subject_outcome_b.rtf", "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_true(b$all_equivalent)
+  expect_equal(nrow(b$summary), 1L)
+  expect_match(b$summary$note, "Fuzzy-matched", fixed = TRUE)
+  expect_match(b$summary$note, "edit distance 1", fixed = TRUE)
+})
+
+test_that("zero-separated family tokens identify the requested prefix example", {
+  p <- new_pair("zero_token_prefix")
+  put(p$d1, "s0exp0sum.rtf", "identical_A.rtf")
+  put(p$d2, "s0exp0sum0bystudy.rtf", "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_true(b$all_equivalent)
+  expect_equal(nrow(b$summary), 1L)
+  expect_equal(b$results[["s0exp0sum.rtf"]]$file2_name,
+               "s0exp0sum0bystudy.rtf")
+  expect_match(b$summary$note, "0-token-matched", fixed = TRUE)
+  expect_match(b$summary$note, "token 80.0%", fixed = TRUE)
+  report <- write_batch_report(b, console = FALSE)
+  expect_true(any(grepl("0-token-matched", report, fixed = TRUE)))
+})
+
+test_that("zero-token candidates still require supporting table content", {
+  p <- new_pair("zero_token_content_reject")
+  write_content_match_rtf(file.path(p$d1, "s0exp0sum.rtf"), "Adverse Events",
+                          c("Headache", "Nausea"))
+  write_content_match_rtf(file.path(p$d2, "s0exp0sum0bystudy.rtf"), "Demographics",
+                          c("Age", "Sex"))
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_equal(b$totals$n_only1, 1L)
+  expect_equal(b$totals$n_only2, 1L)
+  expect_length(b$results, 0L)
+  expect_true(all(grepl("rejected by content check", b$summary$note, fixed = TRUE)))
+})
+
+test_that("rendered content chooses the correct fuzzy filename candidate", {
+  p <- new_pair("fuzzy_content_choice")
+  write_content_match_rtf(file.path(p$d1, "clinical_report_x.rtf"),
+                          "Adverse Events by Preferred Term",
+                          c("Headache", "Nausea", "Dizziness"))
+  write_content_match_rtf(file.path(p$d2, "clinical_report_a.rtf"),
+                          "Demographic Characteristics",
+                          c("Age", "Sex", "Race"))
+  write_content_match_rtf(file.path(p$d2, "clinical_report_b.rtf"),
+                          "Adverse Events by Preferred Term",
+                          c("Headache", "Nausea", "Fatigue"))
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+  st <- setNames(b$summary$status, b$summary$file)
+
+  expect_equal(st[["clinical_report_x.rtf"]], "DIFFERENCES")
+  expect_equal(b$results[["clinical_report_x.rtf"]]$file2_name,
+               "clinical_report_b.rtf")
+  expect_equal(st[["clinical_report_a.rtf"]], "ONLY_IN_FOLDER2")
+  expect_match(b$summary$note[b$summary$file == "clinical_report_x.rtf"],
+               "title 100.0%, Column 1 66.7%", fixed = TRUE)
+})
+
+test_that("similar filenames with unrelated rendered content are not paired", {
+  p <- new_pair("fuzzy_content_reject")
+  write_content_match_rtf(file.path(p$d1, "clinical_output_a.rtf"),
+                          "Adverse Events by Preferred Term",
+                          c("Headache", "Nausea", "Dizziness"))
+  write_content_match_rtf(file.path(p$d2, "clinical_output_b.rtf"),
+                          "Demographic Characteristics",
+                          c("Age", "Sex", "Race"))
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_equal(nrow(b$summary), 2L)
+  expect_equal(b$totals$n_only1, 1L)
+  expect_equal(b$totals$n_only2, 1L)
+  expect_length(b$results, 0L)
+  expect_true(all(grepl("rejected by content check", b$summary$note, fixed = TRUE)))
+  expect_true(all(grepl("Column 1 0.0%", b$summary$note, fixed = TRUE)))
+})
+
+test_that("exact filename matches take priority over fuzzy alternatives", {
+  p <- new_pair("fuzzy_exact_priority")
+  put(p$d1, "clinical_table_alpha.rtf", "identical_A.rtf")
+  put(p$d2, "clinical_table_alpha.rtf", "identical_B.rtf")
+  put(p$d2, "clinical_table_alphb.rtf", "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+  st <- setNames(b$summary$status, b$summary$file)
+
+  expect_equal(st[["clinical_table_alpha.rtf"]], "EQUIVALENT")
+  expect_equal(st[["clinical_table_alphb.rtf"]], "ONLY_IN_FOLDER2")
+  expect_equal(b$totals$n_equivalent, 1L)
+  expect_equal(b$totals$n_only2, 1L)
+})
+
+test_that("ambiguous fuzzy candidates remain unmatched", {
+  p <- new_pair("fuzzy_ambiguous")
+  put(p$d1, "clinical_table_x.rtf", "identical_A.rtf")
+  put(p$d2, "clinical_table_a.rtf", "identical_B.rtf")
+  put(p$d2, "clinical_table_b.rtf", "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_equal(nrow(b$summary), 3L)
+  expect_equal(b$totals$n_only1, 1L)
+  expect_equal(b$totals$n_only2, 2L)
+  expect_length(b$results, 0L)
+})
+
+test_that("weak filename similarity can match through the content-only fallback", {
+  p <- new_pair("fuzzy_weak")
+  put(p$d1, "clinical_adverse_events.rtf", "identical_A.rtf")
+  put(p$d2, "clinical_efficacy_table.rtf", "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_true(b$all_equivalent)
+  expect_equal(nrow(b$summary), 1L)
+  expect_equal(b$results[["clinical_adverse_events.rtf"]]$file2_name,
+               "clinical_efficacy_table.rtf")
+  expect_match(b$summary$note, "Content-matched", fixed = TRUE)
+})
+
+test_that("content-only fallback checks unmatched RTFs across relative subfolders", {
+  p <- new_pair("fuzzy_subfolder_boundary")
+  dir.create(file.path(p$d1, "tables"))
+  dir.create(file.path(p$d2, "listings"))
+  put(p$d1, file.path("tables", "subject_outcome_a.rtf"), "identical_A.rtf")
+  put(p$d2, file.path("listings", "subject_outcome_b.rtf"), "identical_B.rtf")
+
+  b <- compare_rtf_folder(p$d1, p$d2, recursive = TRUE,
+                          console = FALSE, progress = FALSE)
+
+  expect_true(b$all_equivalent)
+  expect_equal(nrow(b$summary), 1L)
+  expect_equal(b$results[[file.path("tables", "subject_outcome_a.rtf")]]$file2_name,
+               file.path("listings", "subject_outcome_b.rtf"))
+  expect_match(b$summary$note, "Content-matched", fixed = TRUE)
+})
+
+test_that("content-only fallback chooses a unique reciprocal match", {
+  p <- new_pair("content_only_unique")
+  write_content_match_rtf(file.path(p$d1, "alpha_source.rtf"),
+                          "Adverse Events by Preferred Term",
+                          c("Headache", "Nausea", "Dizziness"))
+  write_content_match_rtf(file.path(p$d2, "unrelated_filename.rtf"),
+                          "Adverse Events by Preferred Term",
+                          c("Headache", "Nausea", "Dizziness"))
+  write_content_match_rtf(file.path(p$d2, "demographic_output.rtf"),
+                          "Demographic Characteristics", c("Age", "Sex", "Race"))
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+  st <- setNames(b$summary$status, b$summary$file)
+
+  expect_equal(st[["alpha_source.rtf"]], "EQUIVALENT")
+  expect_equal(b$results[["alpha_source.rtf"]]$file2_name, "unrelated_filename.rtf")
+  expect_equal(st[["demographic_output.rtf"]], "ONLY_IN_FOLDER2")
+  expect_match(b$summary$note[b$summary$file == "alpha_source.rtf"],
+               "after all-unmatched search", fixed = TRUE)
+  report <- write_batch_report(b, console = FALSE)
+  expect_true(any(grepl("Content-matched", report, fixed = TRUE)))
+})
+
+test_that("no content fallback match is explicitly reported", {
+  p <- new_pair("content_only_none")
+  write_content_match_rtf(file.path(p$d1, "alpha_source.rtf"), "Adverse Events",
+                          c("Headache", "Nausea"))
+  write_content_match_rtf(file.path(p$d2, "demographic_output.rtf"), "Demographics",
+                          c("Age", "Sex"))
+
+  b <- compare_rtf_folder(p$d1, p$d2, console = FALSE, progress = FALSE)
+
+  expect_equal(nrow(b$summary), 2L)
+  expect_length(b$results, 0L)
+  expect_true(all(grepl("No exact, 0-token, or safe content match found",
+                        b$summary$note, fixed = TRUE)))
+  expect_true(all(grepl("checking 1 unmatched", b$summary$note, fixed = TRUE)))
 })
 
 test_that("an unreadable file becomes an ERROR row without aborting the batch", {

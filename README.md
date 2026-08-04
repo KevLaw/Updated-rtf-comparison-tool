@@ -65,7 +65,7 @@ press. You only ever do this once per computer.
 | Double-click **`windows\2-Compare-RTF-Files.bat`** | Double-click **`macos/2-Compare-RTF-Files.command`** |
 
 It prompts for two file paths — **paste or type each path and press Enter** (in Windows
-Explorer, Shift + right-click a file → *Copy as path*). Windows labels the selections as:
+Explorer, Shift + right-click a file → *Copy as path*). Windows and macOS label the selections as:
 
 ```
 File 1 (Set 1) : <paste the first path>
@@ -78,9 +78,7 @@ automatically**; it then asks whether to export the report as **TXT**, **CSV**, 
 and prompts for where to save it (type a full path or a folder). Finally it offers to
 compare another pair. Works with any two RTF files on the machine.
 
-The Mac runner retains its existing `reference` and `comparison` prompt labels and behavior.
-
-On Windows, after the comparison and normal report choices are complete, the tool also asks:
+On Windows and macOS, after the comparison and normal report choices are complete, the tool also asks:
 
 > Would you like a separate set of RTF tables generated showing only the differences or no
 > differences identified line by line?
@@ -125,8 +123,7 @@ the changed Set 2 character span is enclosed in parentheses; a Set 1 deletion is
 `(missing)`. The exact heading `Footnote changes in brackets` appears above the footnotes only
 when there is a material footnote change.
 
-Change-table generation is a **Windows workflow feature**. The normal comparison report and
-the macOS launchers retain their existing behavior.
+Change-table generation is available from both the **Windows and macOS workflows**.
 
 > **Prefer clicking files in a dialog?** Use `2b-Compare-Using-File-Picker.bat` /
 > `2b-Compare-Using-File-Picker.command` instead — same result, file-picker dialogs rather
@@ -142,11 +139,12 @@ To QC a whole set of tables in one go, compare two **folders** instead of two fi
 |---|---|
 | Double-click **`windows\2c-Compare-Folders.bat`** | Double-click **`macos/2c-Compare-Folders.command`** |
 
-On Windows, two folder pickers open — choose the **Set 1** folder, then the **Set 2** folder.
-The Mac runner retains its existing reference/comparison picker labels and behavior.
-The tool compares **every `.rtf` file** in the first folder against the file of the **same
-name** in the second folder, and produces **one report that lists every file** — including the
-ones that are **EQUIVALENT** — so the report is a complete record of the set:
+Two folder pickers open — choose the **Set 1** folder, then the **Set 2** folder.
+The tool compares **every `.rtf` file** in the first folder against its corresponding file in
+the second folder. Exact normalized filenames are paired first; a remaining pair may also be
+matched when the names differ slightly and the match is uniquely identifiable. It produces
+**one report that lists every file** — including the ones that are **EQUIVALENT** — so the
+report is a complete record of the set:
 
 ```
 PER-FILE RESULTS  (every file is listed, including matches):
@@ -159,14 +157,38 @@ table_14-3.rtf  ONLY IN FOLDER 1 (no match)
 Files that differ have their cell-level differences listed underneath; files present in only
 one folder (or that can't be read) are flagged rather than silently skipped. The full report
 is **archived automatically** inside the tool's `logs/reports/` folder (a `.txt` and a `.csv`),
-and you're also offered a **Save dialog** to keep your own copy wherever you like. The two
-folders must use **matching file names** for files to be paired.
+and you're also offered a **Save dialog** to keep your own copy wherever you like.
 
-On Windows, the same final RTF-change-table prompt is offered after a folder run. If selected,
+On Windows and macOS, the same final RTF-change-table prompt is offered after a folder run. If selected,
 the tool generates Set 1 and Set 2 change tables for every successfully paired file, including
 equivalent pairs. The same calculation, semantic row-alignment, header, and footnote rules
 described above apply. Unmatched or unreadable files remain identified in the batch report but
 do not produce a change RTF.
+
+**Three-pass pairing rule:** exact normalized filenames always take priority. Among remaining
+files, the second pass recognizes either (a) long names within 3 single-character edits and at
+least 85% similarity or (b) filename families separated by `0`. For the family rule, `s` and
+`ae` are treated as generic prefixes; at least two other tokens must occur in the same order and
+cover at least two-thirds of the shorter token list. Thus `s0exp0sum.rtf` becomes a candidate for
+`s0exp0sum0bystudy.rtf`. Filename candidates in the same relative subfolder must also pass the
+rendered-content gate: the displayed title must have at least 35% similarity or the Column 1
+descriptions must have at least 20% Dice overlap. Candidate ranking combines the filename,
+title, and Column 1 evidence, and the winning pair must be unique in both directions by at least
+5 percentage points.
+
+The third pass takes every still-unmatched RTF in Set 1 and checks its rendered content against
+every still-unmatched RTF in Set 2, even when the filenames and relative subfolders have no
+apparent relationship. When both title and Column 1 evidence are available, each must be at
+least 20% and their average must be at least 65%; if only one is available, it must be at least
+85%. A content-only pair must be each file's unique best match by at least 10 percentage points.
+The report identifies content-only matches and explicitly states when all eligible unmatched
+files were checked without finding a safe match. Exact filename pairs are still compared
+regardless of content because finding substantial content changes is the tool's core purpose.
+For example, `s0ae0by0outcompe0sei.rtf` safely pairs with
+`s0ae0by0outcompe0aeosi.rtf`. Ambiguous, weaker, or content-rejected candidates stay unmatched,
+and the report records why no safe match was found. A change RTF is generated only for a
+successfully compared exact, filename-family, or content-only pair; an unmatched file never
+produces a change RTF.
 
 ---
 
@@ -206,7 +228,7 @@ The audit log and the archived reports live **inside the tool folder** (`logs/`)
 > downloaded files are "blocked". Clear it yourself without admin: right-click the **ZIP** →
 > **Properties** → tick **Unblock** → **OK**, *then* extract. If your company blocks `.bat`
 > files entirely, drive the tool from the R console instead (no admin, always works):
-> `source("C:/path/to/rtf-comparison-tool/R/run_compare_paths.R")` then paste the two paths.
+> `source("C:/path/to/Updated-rtf-comparison-tool/R/run_compare_paths.R")` then paste the two paths.
 > See `START HERE (Windows).txt` for the full no-admin walkthrough.
 
 > **Mac, first run only:** macOS may say the file is "from an unidentified developer."
@@ -342,7 +364,7 @@ A full automated suite verifies every part of the tool against small hand-built 
 the large clinical example files, **and** real-world clinical outputs (see
 `tests/real_world/`). It also validates change calculations independently, semantic row
 alignment, column-level `Change`/`NC` labels, footnote annotations, generated-RTF reparsing,
-and the Windows runners.
+and the Windows/macOS runners.
 
 **Easy way:** double-click **`windows\3-Run-Tests.bat`** / **`macos/3-Run-Tests.command`**.
 
@@ -358,7 +380,7 @@ all five difference types, numeric tolerance, the report/CSV/exit codes, edge ca
 check, the two key integration expectations (base↔reformatted EQUIVALENT;
 base↔changed = 7 differences), real-world clinical files (`tests/real_world/`), the
 **batch folder comparison** (every file listed, including matches), the **audit log**
-(every run recorded, including no-difference runs), and the optional Windows RTF change
+(every run recorded, including no-difference runs), and the optional Windows/macOS RTF change
 tables. Pull requests are additionally checked on `windows-latest` before merge.
 
 ---
@@ -385,7 +407,7 @@ fall out as `CELL_ONLY_IN_FILEn` entries. The comparison uses a fast `data.table
 join so it scales to large files. As an independent cross-check, the `diffdf` package (the
 R analogue of SAS `PROC COMPARE`, widely trusted in pharma QC) can corroborate the result.
 
-The optional Windows change-table writer is a separate presentation stage. It aligns body
+The optional cross-platform change-table writer is a separate presentation stage. It aligns body
 rows semantically by Column 1 description to prevent a row inserted in one set from shifting
 every later displayed result. This does not change the normal comparison engine or its
 positional audit evidence.
@@ -431,7 +453,7 @@ See `docs/RTF_Compare_Implementation_Plan_R.md` for the full build specification
 ## Repository layout
 
 ```
-rtf-comparison-tool/
+Updated-rtf-comparison-tool/
 ├── README.md                  ← you are here
 ├── START HERE (Windows).txt   ← plain-text quick start for the client (Windows)
 ├── START HERE (Mac).txt       ← plain-text quick start for the client (macOS)

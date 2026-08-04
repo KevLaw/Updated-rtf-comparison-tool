@@ -1,14 +1,16 @@
 #!/bin/bash
 # ============================================================================
-#  Compare two RTF files by PATH (macOS)
-#  Double-click this file, then paste/type the two file paths when prompted.
+#  Compare Set 1 and Set 2 RTF files by PATH (macOS)
+#  Double-click this file, paste/type both paths, then optionally generate
+#  paired RTF change tables.
 #  A report is saved next to the first file.
 #  (Prefer clicking files instead? Use 2b-Compare-Using-File-Picker.command.)
 # ============================================================================
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 RSCRIPT=""
-for c in "$(command -v Rscript)" /usr/local/bin/Rscript /opt/homebrew/bin/Rscript \
+for c in "$(command -v Rscript)" "$HOME/.local/share/micromamba/envs/rtf-comparison/bin/Rscript" \
+         /usr/local/bin/Rscript /opt/homebrew/bin/Rscript \
          /Library/Frameworks/R.framework/Resources/bin/Rscript; do
   if [ -n "$c" ] && [ -x "$c" ]; then RSCRIPT="$c"; break; fi
 done

@@ -52,8 +52,10 @@ WHAT YOU NEED
   pastes its full path), then press Enter. (Or in Finder: right-click the
   file, hold the Option key, choose "Copy ... as Pathname", then paste.)
 
-      File 1 (reference)  : <drag/paste the first path>   [Enter]
-      File 2 (comparison) : <drag/paste the second path>  [Enter]
+      File 1 (Set 1) : <drag/paste the first path>   [Enter]
+      File 2 (Set 2) : <drag/paste the second path>  [Enter]
+
+  The first file you select is always Set 1. The second is always Set 2.
 
   The result appears immediately on screen:
         "EQUIVALENT"            = no content differences, or
@@ -69,6 +71,25 @@ WHAT YOU NEED
   and only that file is written. (TXT = the full report; CSV = just the
   differences, for Excel/Numbers.)
 
+  At the end it also asks:
+
+        "Would you like a separate set of RTF tables generated showing only
+         the differences or no differences identified line by line?"
+
+  Answer Yes to create change tables in the style of each source RTF. The
+  calculation direction is Set 2 minus Set 1. Generated data cells contain
+  only NC, a signed count/percentage-point change such as (+5, -1%), a signed
+  scalar change such as +1.5, CHG, or an ONLY IN SET marker.
+
+  Original headers are preserved and receive Change or NC on a new line. The
+  table number receives "_Change". Rows are matched by Column 1 descriptions,
+  and materially changed Set 2 footnote text is shown in parentheses. The
+  generated files keep their original names with "_change" before .rtf and
+  are saved inside the tool under:
+
+        logs/RTF Changes/Set 1/
+        logs/RTF Changes/Set 2/
+
   It then asks "Compare another pair? (y/N)" so you can keep going.
   Works with ANY two RTF files anywhere on the computer.
 
@@ -82,9 +103,11 @@ WHAT YOU NEED
 
         2c-Compare-Folders.command
 
-  Two folder pickers open. Choose the FIRST (reference) folder, then the
-  SECOND (comparison) folder. The tool compares EVERY .rtf file in the first
-  folder against the file of the SAME NAME in the second folder.
+  Two folder pickers open. Choose the FIRST folder (Set 1), then the SECOND
+  folder (Set 2). The tool compares EVERY .rtf file in the first
+  folder against its corresponding file in the second folder. Exact names
+  are matched first. A file may also be paired when its name differs slightly
+  and there is one clear, highly similar match in the same relative subfolder.
 
   You get ONE report that lists EVERY file - including the ones that are
   EQUIVALENT - so it is a complete record of the whole set. Files that
@@ -93,7 +116,23 @@ WHAT YOU NEED
   "logs/reports" folder, and you are also offered a Save dialog to keep your
   own copy wherever you like.
 
-  (The two folders must use matching file names so files can be paired.)
+  At the end, the same change-table question appears. Answer Yes to generate
+  change RTFs for every successfully compared filename pair. Exact names take
+  priority. A like-name match must be unique, within 3 character edits, at
+  least 85% similar, and clearly better than any alternative. Names are also
+  split at each "0" so related families such as s0exp0sum and
+  s0exp0sum0bystudy can be tested. Every filename candidate must be supported
+  by the displayed title or Column 1 descriptions.
+
+  Finally, every still-unmatched Set 1 RTF is content-checked against every
+  still-unmatched Set 2 RTF, even when the names are unrelated. Only a strong,
+  unique title/Column 1 match is accepted. The report says when this complete
+  search found no safe match. Ambiguous or rejected files remain unmatched
+  and NO change RTF is created for them.
+
+  Example of a safely paired like-name set:
+    Set 1: s0ae0by0outcompe0sei.rtf
+    Set 2: s0ae0by0outcompe0aeosi.rtf
 
 ------------------------------------------------------------------------
  AUDIT LOG  -  proof of every run (kept automatically)
@@ -119,8 +158,8 @@ WHAT YOU NEED
   If you'd rather not use the launchers, open R (or RStudio) and run, with
   your real folder location and forward slashes:
 
-        source("/Users/you/Downloads/rtf-comparison-tool/R/install_packages.R")   # once
-        source("/Users/you/Downloads/rtf-comparison-tool/R/run_compare_paths.R")  # to compare
+        source("/Users/you/Downloads/Updated-rtf-comparison-tool/R/install_packages.R")   # once
+        source("/Users/you/Downloads/Updated-rtf-comparison-tool/R/run_compare_paths.R")  # to compare
 
   ...then paste the two file paths at the prompts.
 
@@ -141,7 +180,7 @@ WHAT YOU NEED
 ------------------------------------------------------------------------
   2b-Compare-Using-File-Picker.command  Pick files in a dialog instead.
   2c-Compare-Folders.command             Batch-compare two whole folders.
-  3-Run-Tests.command                    Built-in test suite ("171 passed").
+  3-Run-Tests.command                    Built-in test suite (must show 0 failures).
   4-Generate-Test-Data.command           Creates sample RTF files to try.
   5-View-Audit-Log.command               Open the audit log (logs/audit_log.csv).
 

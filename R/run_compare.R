@@ -38,6 +38,8 @@ have_tcltk <- requireNamespace("tcltk", quietly = TRUE) &&
 
 say <- function(...) cat(..., "\n", sep = "")
 windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
+change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_RTF_PROMPT <- paste0(
   "Would you like a separate set of RTF tables generated showing only the ",
@@ -77,6 +79,21 @@ popup <- function(title, message, equivalent) {
   }
 }
 
+ask_change_prompt <- function() {
+  if (have_tcltk) {
+    ans <- tryCatch(as.character(tcltk::tkmessageBox(
+      title = "Generate RTF change tables?", icon = "question", type = "yesno",
+      message = CHANGE_RTF_PROMPT)), error = function(e) "no")
+    return(identical(ans, "yes"))
+  }
+  cat("\n", CHANGE_RTF_PROMPT, " (y/N): ", sep = "")
+  con <- file("stdin", open = "r")
+  on.exit(close(con))
+  ans <- tryCatch(readLines(con, n = 1L, warn = FALSE),
+                  error = function(e) character())
+  length(ans) > 0L && tolower(trimws(ans[[1]])) %in% c("y", "yes")
+}
+
 # --- run ---------------------------------------------------------------------
 say("============================================================")
 say("RTF Comparison Tool")
@@ -91,8 +108,8 @@ preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_FILE
 if (nzchar(preset1)) {
   file1 <- preset1
 } else {
-  first_desc <- if (windows_mode) "FIRST file (Set 1)" else "FIRST (reference) file"
-  first_title <- if (windows_mode)
+  first_desc <- if (change_prompt_mode) "FIRST file (Set 1)" else "FIRST (reference) file"
+  first_title <- if (change_prompt_mode)
     "Step 1 of 2: choose the FIRST RTF file (Set 1)" else
     "Step 1 of 2: choose the FIRST (reference) RTF file"
   say("A file picker will open. Choose the ", first_desc, ".")
@@ -105,8 +122,8 @@ say("  File 1: ", file1)
 if (nzchar(preset2)) {
   file2 <- preset2
 } else {
-  second_desc <- if (windows_mode) "SECOND file (Set 2)" else "SECOND (comparison) file"
-  second_title <- if (windows_mode)
+  second_desc <- if (change_prompt_mode) "SECOND file (Set 2)" else "SECOND (comparison) file"
+  second_title <- if (change_prompt_mode)
     "Step 2 of 2: choose the SECOND RTF file (Set 2)" else
     "Step 2 of 2: choose the SECOND (comparison) RTF file"
   say("\nNow choose the ", second_desc, ".")
@@ -185,17 +202,14 @@ audit_path <- tryCatch(
   error = function(e) { say("WARNING: could not update audit log: ", conditionMessage(e)); NA })
 if (!is.na(audit_path)) say("Audit log updated: ", audit_path)
 
-# --- optional RTF change tables (Windows workflow) --------------------------
+# --- optional RTF change tables (Windows and macOS workflows) ---------------
 generate_changes <- FALSE
 change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
 if (change_preset %in% c("y", "yes", "true", "1")) {
   generate_changes <- TRUE
 } else if (!change_preset %in% c("n", "no", "false", "0") &&
-           windows_mode && gui_mode && have_tcltk) {
-  ans <- tryCatch(as.character(tcltk::tkmessageBox(
-    title = "Generate RTF change tables?", icon = "question", type = "yesno",
-    message = CHANGE_RTF_PROMPT)), error = function(e) "no")
-  generate_changes <- identical(ans, "yes")
+           change_prompt_mode && gui_mode) {
+  generate_changes <- ask_change_prompt()
 }
 if (generate_changes) {
   change_files <- tryCatch(

@@ -37,7 +37,7 @@ What gets written here:
       file per batch run (a .txt full report and a .csv per-file summary).
 
   RTF Changes/
-      Optional Windows change tables created when the user answers Yes to the
+      Optional Windows or macOS change tables created when the user answers Yes to the
       final prompt. Set 1 contains outputs styled from the first selected
       file/folder; Set 2 contains outputs styled from the second. Both show the
       same Set 2-minus-Set 1 results and aligned union of Column 1 rows. Each
@@ -49,6 +49,13 @@ What gets written here:
       NC; otherwise they say Change. Material Set 2 footnote differences are
       shown in parentheses beneath "Footnote changes in brackets"; cosmetic
       spacing changes are ignored and Set 1 deletions appear as (missing).
+
+      A file found in only one compared folder never produces a change RTF.
+      Exact normalized names pair first. Like names and related filename
+      families separated by "0" must also pass a title/Column 1 content gate.
+      Every still-unmatched RTF is then content-checked against every eligible
+      unmatched RTF in the other set. The report records content-only matches
+      and explicitly states when the complete search finds no safe match.
 
 This folder is safe to back up. You can copy audit_log.csv elsewhere, but do
 not move the original out of this folder while you are still using the tool.

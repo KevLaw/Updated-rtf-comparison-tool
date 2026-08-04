@@ -49,6 +49,8 @@ have_tcltk <- requireNamespace("tcltk", quietly = TRUE) &&
 
 say <- function(...) cat(..., "\n", sep = "")
 windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
+change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_RTF_PROMPT <- paste0(
   "Would you like a separate set of RTF tables generated showing only the ",
@@ -89,6 +91,21 @@ popup <- function(title, message, equivalent) {
   }
 }
 
+ask_change_prompt <- function() {
+  if (have_tcltk) {
+    ans <- tryCatch(as.character(tcltk::tkmessageBox(
+      title = "Generate RTF change tables?", icon = "question", type = "yesno",
+      message = CHANGE_RTF_PROMPT)), error = function(e) "no")
+    return(identical(ans, "yes"))
+  }
+  cat("\n", CHANGE_RTF_PROMPT, " (y/N): ", sep = "")
+  con <- file("stdin", open = "r")
+  on.exit(close(con))
+  ans <- tryCatch(readLines(con, n = 1L, warn = FALSE),
+                  error = function(e) character())
+  length(ans) > 0L && tolower(trimws(ans[[1]])) %in% c("y", "yes")
+}
+
 OPTS <- "num_tol=0, rel_tol=FALSE, trim=TRUE, collapse_space=TRUE, casefold=FALSE"
 
 # --- run ---------------------------------------------------------------------
@@ -105,7 +122,7 @@ preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_DIR2
 if (nzchar(preset1)) {
   dir1 <- preset1
 } else {
-  first_desc <- if (windows_mode) "FIRST folder (Set 1)" else "FIRST (reference) folder"
+  first_desc <- if (change_prompt_mode) "FIRST folder (Set 1)" else "FIRST (reference) folder"
   say("A folder picker will open. Choose the ", first_desc, ".")
   dir1 <- pick_folder(paste0("Step 1 of 2: choose the ", first_desc, " of RTF files"))
 }
@@ -116,7 +133,7 @@ say("  Folder 1: ", dir1)
 if (nzchar(preset2)) {
   dir2 <- preset2
 } else {
-  second_desc <- if (windows_mode) "SECOND folder (Set 2)" else "SECOND (comparison) folder"
+  second_desc <- if (change_prompt_mode) "SECOND folder (Set 2)" else "SECOND (comparison) folder"
   say("\nNow choose the ", second_desc, ".")
   dir2 <- pick_folder(paste0("Step 2 of 2: choose the ", second_desc, " of RTF files"))
 }
@@ -217,17 +234,14 @@ if (gui_mode && have_tcltk) {
   }
 }
 
-# --- optional per-source RTF change tables (Windows workflow) ---------------
+# --- optional per-source RTF change tables (Windows and macOS workflows) ----
 generate_changes <- FALSE
 change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
 if (change_preset %in% c("y", "yes", "true", "1")) {
   generate_changes <- TRUE
 } else if (!change_preset %in% c("n", "no", "false", "0") &&
-           windows_mode && gui_mode && have_tcltk) {
-  ans <- tryCatch(as.character(tcltk::tkmessageBox(
-    title = "Generate RTF change tables?", icon = "question", type = "yesno",
-    message = CHANGE_RTF_PROMPT)), error = function(e) "no")
-  generate_changes <- identical(ans, "yes")
+           change_prompt_mode && gui_mode) {
+  generate_changes <- ask_change_prompt()
 }
 if (generate_changes) {
   change_files <- write_batch_change_rtfs(batch, root)

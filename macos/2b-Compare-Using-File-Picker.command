@@ -2,12 +2,14 @@
 # ============================================================================
 #  Compare two RTF files using FILE-PICKER dialogs (macOS)
 #  Alternative to 2-Compare-RTF-Files.command for those who prefer clicking
-#  files instead of pasting paths. Two dialogs appear; pick the two files.
+#  files instead of pasting paths. Pick Set 1 first and Set 2 second; the final
+#  prompt can generate paired RTF change tables.
 # ============================================================================
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 RSCRIPT=""
-for c in "$(command -v Rscript)" /usr/local/bin/Rscript /opt/homebrew/bin/Rscript \
+for c in "$(command -v Rscript)" "$HOME/.local/share/micromamba/envs/rtf-comparison/bin/Rscript" \
+         /usr/local/bin/Rscript /opt/homebrew/bin/Rscript \
          /Library/Frameworks/R.framework/Resources/bin/Rscript; do
   if [ -n "$c" ] && [ -x "$c" ]; then RSCRIPT="$c"; break; fi
 done
