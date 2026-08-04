@@ -31,8 +31,9 @@ test_that("change RTF pair preserves formatting and writes delta-only cells", {
   expect_true(all(file.exists(written$output)))
   expect_equal(basename(written$output),
                c("clinical_table_base_change.rtf", "clinical_table_changed_change.rtf"))
-  expect_match(written$output[[1]], "logs/RTF Changes/Set 1", fixed = TRUE)
-  expect_match(written$output[[2]], "logs/RTF Changes/Set 2", fixed = TRUE)
+  portable_output <- chartr("\\", "/", written$output)
+  expect_match(portable_output[[1]], "logs/RTF Changes/Set 1", fixed = TRUE)
+  expect_match(portable_output[[2]], "logs/RTF Changes/Set 2", fixed = TRUE)
 
   source_text <- .read_rtf_text(g$files[["base"]])
   output_text <- .read_rtf_text(written$output[[1]])
@@ -129,9 +130,17 @@ test_that("single-file picker runner can generate change RTFs end to end", {
             file.path(troot, "set2.rtf"))
 
   runner <- file.path(troot, "R", "run_compare.R")
+  prior_change_setting <- Sys.getenv("RTF_GENERATE_CHANGES", unset = NA_character_)
+  on.exit({
+    if (is.na(prior_change_setting)) Sys.unsetenv("RTF_GENERATE_CHANGES")
+    else Sys.setenv(RTF_GENERATE_CHANGES = prior_change_setting)
+  }, add = TRUE)
+  # Set the parent process environment so the child inherits it. Passing an
+  # `env` argument to system2() is not portable to the Windows runner.
+  Sys.setenv(RTF_GENERATE_CHANGES = "yes")
   out <- suppressWarnings(system2(
     rscript, c(runner, file.path(troot, "set1.rtf"), file.path(troot, "set2.rtf")),
-    stdout = TRUE, stderr = TRUE, env = "RTF_GENERATE_CHANGES=yes"))
+    stdout = TRUE, stderr = TRUE))
   st <- attr(out, "status"); if (is.null(st)) st <- 0L
   expect_equal(as.integer(st), 1L)
   expect_true(file.exists(file.path(troot, "logs", "RTF Changes", "Set 1",
