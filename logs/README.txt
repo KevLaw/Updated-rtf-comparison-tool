@@ -36,6 +36,20 @@ What gets written here:
       Full batch reports are archived here automatically, one timestamped
       file per batch run (a .txt full report and a .csv per-file summary).
 
+  RTF Changes/
+      Optional Windows change tables created when the user answers Yes to the
+      final prompt. Set 1 contains outputs styled from the first selected
+      file/folder; Set 2 contains outputs styled from the second. Both show the
+      same Set 2-minus-Set 1 results and aligned union of Column 1 rows. Each
+      output keeps the source name with "_change" before the .rtf extension.
+
+      A generated data cell contains only NC, a signed count/percentage-point
+      delta such as (+5, -1%), a signed scalar delta such as +1.5, CHG, or an
+      ONLY IN SET marker. Column headers say NC only when the entire column is
+      NC; otherwise they say Change. Material Set 2 footnote differences are
+      shown in parentheses beneath "Footnote changes in brackets"; cosmetic
+      spacing changes are ignored and Set 1 deletions appear as (missing).
+
 This folder is safe to back up. You can copy audit_log.csv elsewhere, but do
 not move the original out of this folder while you are still using the tool.
 ========================================================================

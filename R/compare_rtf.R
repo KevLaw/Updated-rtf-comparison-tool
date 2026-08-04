@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.1.0"
+RTF_TOOL_VERSION <- "1.3.0"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -377,8 +377,741 @@ compare_rtf <- function(file1, file2,
 
   result$byte_identical <- byte_identical
   result$diffdf_summary <- diffdf_summary
+  # Retain the compared paths for the optional change-table writer.  This does
+  # not alter the comparison evidence; it lets write_change_rtf() rebuild a
+  # paired semantic model even when called with its historical three-argument
+  # interface.
+  result$file1 <- normalizePath(file1, mustWork = FALSE)
+  result$file2 <- normalizePath(file2, mustWork = FALSE)
   invisible(result)
 }
+
+# ============================================================================
+# Change-table RTF output
+# ============================================================================
+# The change-table writer builds one paired semantic model, then renders it
+# through each source document's RTF row/paragraph templates.  The comparison
+# engine above remains positional by design; semantic alignment is confined to
+# this optional artifact.
+
+.read_rtf_text <- function(path) {
+  size <- file.info(path)$size
+  if (is.na(size) || size < 1L) stop(sprintf("Cannot read empty RTF: '%s'", path), call. = FALSE)
+  con <- file(path, open = "rb")
+  on.exit(close(con))
+  readChar(con, nchars = size, useBytes = TRUE)
+}
+
+.write_rtf_text <- function(text, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  con <- file(path, open = "wb")
+  on.exit(close(con))
+  writeChar(text, con, eos = NULL, useBytes = TRUE)
+  invisible(normalizePath(path, mustWork = FALSE))
+}
+
+# Minimal, deliberately conservative RTF tokenizer.  It is used only to map
+# table rows/cells and trailing paragraphs to raw spans.  Unsupported mappings
+# fail before any destination is replaced.
+.rtf_tokens <- function(text) {
+  pattern <- "\\\\(?:'[0-9A-Fa-f]{2}|[A-Za-z]+-?[0-9]* ?|.)|[{}]|[^{}\\\\]+"
+  at <- gregexpr(pattern, text, perl = TRUE)[[1]]
+  if (length(at) == 1L && at[1] == -1L)
+    return(data.frame(type = character(), start = integer(), end = integer(),
+                      control = character(), param = character()))
+  len <- attr(at, "match.length"); raw <- substring(text, at, at + len - 1L)
+  type <- ifelse(raw == "{", "group_start", ifelse(raw == "}", "group_end",
+                 ifelse(startsWith(raw, "\\"), "control", "text")))
+  control <- param <- rep("", length(raw)); ci <- which(type == "control")
+  if (length(ci)) for (i in ci) {
+    z <- raw[i]
+    if (grepl("^\\\\'[0-9A-Fa-f]{2}$", z)) {
+      control[i] <- "'"; param[i] <- substring(z, 3L, 4L)
+    } else if (grepl("^\\\\[A-Za-z]", z)) {
+      control[i] <- sub("^\\\\([A-Za-z]+).*$", "\\1", z)
+      if (grepl("^\\\\[A-Za-z]+-?[0-9]", z))
+        param[i] <- sub("^\\\\[A-Za-z]+(-?[0-9]+) ?$", "\\1", z)
+    } else {
+      if (nchar(z) != 2L) stop("Invalid RTF control symbol.", call. = FALSE)
+      control[i] <- substring(z, 2L, 2L)
+    }
+  }
+  data.frame(type = type, start = as.integer(at), end = as.integer(at + len - 1L),
+             control = control, param = param, stringsAsFactors = FALSE)
+}
+
+.rtf_hex_char <- function(hex) {
+  z <- tryCatch(iconv(rawToChar(as.raw(strtoi(hex, 16L))), from = "CP1252",
+                      to = "UTF-8"), error = function(e) NA_character_)
+  if (is.na(z)) stop(sprintf("Unsupported RTF hexadecimal byte: %s", hex), call. = FALSE)
+  z
+}
+
+.rtf_decode_span <- function(text) {
+  tok <- .rtf_tokens(text)
+  out <- character(); visible <- logical(nrow(tok)); skip <- 0L
+  uc <- 1L
+  for (i in seq_len(nrow(tok))) {
+    piece <- ""
+    if (tok$type[i] == "text") {
+      piece <- substr(text, tok$start[i], tok$end[i])
+      piece <- gsub("[\r\n]", "", piece)
+      if (skip > 0L && nzchar(piece)) {
+        chars <- strsplit(piece, "", fixed = TRUE)[[1]]
+        take <- min(skip, length(chars)); skip <- skip - take
+        piece <- paste0(chars[-seq_len(take)], collapse = "")
+      }
+    } else if (tok$type[i] == "control") {
+      ctl <- tok$control[i]; prm <- tok$param[i]
+      if (ctl == "uc" && nzchar(prm)) {
+        uc <- suppressWarnings(as.integer(prm)); if (is.na(uc) || uc < 0L) uc <- 1L
+      } else if (ctl == "u" && nzchar(prm)) {
+        cp <- suppressWarnings(as.integer(prm))
+        if (is.na(cp)) stop("Invalid RTF Unicode escape.", call. = FALSE)
+        if (cp < 0L) cp <- cp + 65536L
+        piece <- intToUtf8(cp); skip <- uc
+      } else if (ctl == "'") piece <- .rtf_hex_char(prm)
+      else if (ctl %in% c("\\", "{", "}")) piece <- ctl
+      else if (ctl == "~") piece <- "\u00a0"
+      else if (ctl == "_") piece <- "\u2011"
+      else if (ctl == "line") piece <- "\n"
+      else if (ctl == "tab") piece <- "\t"
+      else if (ctl == "emdash") piece <- "\u2014"
+      else if (ctl == "endash") piece <- "\u2013"
+      else if (ctl == "bullet") piece <- "\u2022"
+      else if (ctl == "lquote") piece <- "\u2018"
+      else if (ctl == "rquote") piece <- "\u2019"
+      else if (ctl == "ldblquote") piece <- "\u201c"
+      else if (ctl == "rdblquote") piece <- "\u201d"
+    }
+    if (nzchar(piece)) {
+      out <- c(out, piece); visible[i] <- TRUE
+    }
+  }
+  list(text = paste0(out, collapse = ""), tokens = tok, visible = visible)
+}
+
+.rtf_escape_insert <- function(x) {
+  chars <- strsplit(enc2utf8(x), "", fixed = TRUE)[[1]]
+  if (!length(chars)) return("")
+  paste0(vapply(chars, function(ch) {
+    cp <- utf8ToInt(ch)
+    if (ch == "\\") return("\\\\")
+    if (ch == "{") return("\\{")
+    if (ch == "}") return("\\}")
+    if (ch == "\n") return("\\line ")
+    if (ch == "\t") return("\\tab ")
+    if (cp >= 32L && cp <= 126L) return(ch)
+    if (cp <= 65535L) {
+      if (cp > 32767L) cp <- cp - 65536L
+      return(sprintf("\\u%d?", cp))
+    }
+    cp <- cp - 65536L
+    hi <- 55296L + bitwShiftR(cp, 10L); lo <- 56320L + bitwAnd(cp, 1023L)
+    if (hi > 32767L) hi <- hi - 65536L
+    if (lo > 32767L) lo <- lo - 65536L
+    sprintf("\\u%d?\\u%d?", hi, lo)
+  }, character(1)), collapse = "")
+}
+
+.rtf_replace_visible <- function(span, value) {
+  dec <- .rtf_decode_span(span)
+  idx <- which(dec$visible)
+  ins <- .rtf_escape_insert(value)
+  if (!length(idx)) return(paste0(span, ins))
+  ranges <- dec$tokens[idx, c("start", "end"), drop = FALSE]
+  chunks <- character(); cursor <- 1L; inserted <- FALSE
+  for (i in seq_len(nrow(ranges))) {
+    st <- ranges$start[i]; en <- ranges$end[i]
+    if (st > cursor) chunks <- c(chunks, substr(span, cursor, st - 1L))
+    if (!inserted) { chunks <- c(chunks, ins); inserted <- TRUE }
+    cursor <- max(cursor, en + 1L)
+  }
+  if (cursor <= nchar(span)) chunks <- c(chunks, substr(span, cursor, nchar(span)))
+  paste0(chunks, collapse = "")
+}
+
+.rtf_row_parts <- function(raw, expected = NULL) {
+  tok <- .rtf_tokens(raw)
+  ci <- which(tok$type == "control" & tok$control == "cell")
+  if (!is.null(expected) && length(ci) != expected)
+    stop(sprintf("Unsafe RTF row mapping: expected %d cells, found %d.", expected, length(ci)),
+         call. = FALSE)
+  seg <- mark <- character(length(ci)); cursor <- 1L
+  for (i in seq_along(ci)) {
+    t <- ci[i]
+    seg[i] <- if (tok$start[t] > cursor) substr(raw, cursor, tok$start[t] - 1L) else ""
+    mark[i] <- substr(raw, tok$start[t], tok$end[t]); cursor <- tok$end[t] + 1L
+  }
+  suffix <- if (cursor <= nchar(raw)) substr(raw, cursor, nchar(raw)) else ""
+  list(segments = seg, markers = mark, suffix = suffix,
+       values = unname(vapply(seg, function(x) .rtf_decode_span(x)$text, character(1))))
+}
+
+.rtf_replace_row <- function(raw, values) {
+  p <- .rtf_row_parts(raw, length(values))
+  paste0(c(rbind(vapply(seq_along(values), function(i)
+    .rtf_replace_visible(p$segments[i], values[i]), character(1)), p$markers),
+    p$suffix), collapse = "")
+}
+
+.rtf_norm <- function(x) trimws(gsub("\\s+", " ", x, perl = TRUE))
+
+.rtf_parse_change_document <- function(path) {
+  text <- .read_rtf_text(path); layout <- .rtf_cell_layout(path); tok <- .rtf_tokens(text)
+  unsupported <- c("nesttableprops", "nestrow", "clmgf", "clmrg", "clvmgf", "clvmrg")
+  bad <- unique(tok$control[tok$type == "control" & tok$control %in% unsupported])
+  if (length(bad))
+    stop(sprintf("Merged or nested RTF tables are not supported for change output in '%s' (%s).",
+                 path, paste(bad, collapse = ", ")), call. = FALSE)
+  starts <- which(tok$type == "control" & tok$control == "trowd")
+  ends <- which(tok$type == "control" & tok$control == "row")
+  if (!length(starts) || !length(ends))
+    stop(sprintf("No safely mappable RTF table found in '%s'.", path), call. = FALSE)
+  pairs <- list(); used <- rep(FALSE, length(ends)); k <- 0L
+  for (s in starts) {
+    epos <- which(ends > s & !used)
+    if (!length(epos)) stop(sprintf("Unterminated RTF row in '%s'.", path), call. = FALSE)
+    e <- ends[epos[1]]; used[epos[1]] <- TRUE; k <- k + 1L
+    pairs[[k]] <- c(tok$start[s], tok$end[e])
+  }
+  # Nested/multiple table structures are not generated speculatively.
+  if (any(vapply(seq_along(pairs)[-1L], function(i) pairs[[i]][1] < pairs[[i-1L]][2], logical(1))))
+    stop(sprintf("Nested RTF tables are not supported for change output: '%s'.", path), call. = FALSE)
+  table_ids <- unique(layout[is_table == TRUE, row_index])
+  if (length(table_ids) != length(pairs))
+    stop(sprintf("RTF row mapping did not validate for '%s'.", path), call. = FALSE)
+  rows <- vector("list", length(pairs))
+  for (i in seq_along(pairs)) {
+    raw <- substr(text, pairs[[i]][1], pairs[[i]][2])
+    expected <- layout[is_table == TRUE & row_index == table_ids[i], raw_value]
+    rp <- .rtf_row_parts(raw, length(expected))
+    if (!identical(enc2utf8(rp$values), enc2utf8(expected)))
+      stop(sprintf("Displayed cell mapping did not validate for row %d of '%s'.", i, path),
+           call. = FALSE)
+    gap <- if (i == 1L) "" else substr(text, pairs[[i - 1L]][2] + 1L,
+                                        pairs[[i]][1] - 1L)
+    rows[[i]] <- list(raw = raw, gap = gap, values = expected, row_index = table_ids[i])
+  }
+  sig <- vapply(rows, function(r) paste(.rtf_norm(r$values), collapse = "\u001e"), character(1))
+  header_sig <- sig[1]; is_header <- sig == header_sig
+  for (i in seq_along(rows)) rows[[i]]$is_header <- is_header[i]
+  if (length(rows) > 1L) for (i in 2:length(rows)) {
+    between <- .rtf_norm(.rtf_decode_span(rows[[i]]$gap)$text)
+    if (nzchar(between) && !is_header[i])
+      stop(sprintf("Multiple independent RTF tables are not supported for change output: '%s'.",
+                   path), call. = FALSE)
+  }
+
+  last_end <- pairs[[length(pairs)]][2]
+  tail <- if (last_end < nchar(text)) substr(text, last_end + 1L, nchar(text)) else ""
+  tt <- .rtf_tokens(tail); pi <- which(tt$type == "control" & tt$control == "par")
+  paras <- list(); cursor <- 1L
+  if (length(pi)) for (j in seq_along(pi)) {
+    raw <- substr(tail, cursor, tt$end[pi[j]])
+    paras[[j]] <- list(raw = raw, value = .rtf_decode_span(raw)$text)
+    cursor <- tt$end[pi[j]] + 1L
+  }
+  suffix <- if (cursor <= nchar(tail)) substr(tail, cursor, nchar(tail)) else ""
+  parsed_tail <- layout[is_table == FALSE & row_index > max(table_ids), raw_value]
+  if (!identical(enc2utf8(vapply(paras, `[[`, character(1), "value")), enc2utf8(parsed_tail)))
+    stop(sprintf("Footnote paragraph mapping did not validate for '%s'.", path), call. = FALSE)
+
+  opens <- sum(tok$type == "group_start")
+  closes <- sum(tok$type == "group_end")
+  if (opens != closes) stop(sprintf("Unbalanced RTF groups in '%s'.", path), call. = FALSE)
+  list(path = path, text = text, rows = rows,
+       prefix = substr(text, 1L, pairs[[1]][1] - 1L),
+       row_gaps = NULL, tail_paras = paras, tail_suffix = suffix,
+       ncol = length(rows[[1]]$values))
+}
+
+.change_rtf_name <- function(path) {
+  nm <- basename(path)
+  if (grepl("\\.rtf$", nm, ignore.case = TRUE))
+    sub("(\\.[Rr][Tt][Ff])$", "_change\\1", nm, perl = TRUE)
+  else paste0(nm, "_change.rtf")
+}
+
+.change_relative_path <- function(path) {
+  d <- dirname(path); nm <- .change_rtf_name(path)
+  if (identical(d, ".")) nm else file.path(d, nm)
+}
+
+.add_change_to_table_number <- function(text) {
+  pattern <- paste0("(?i)(\\bTable[[:space:]]+)",
+    "([0-9]+(?:\\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z]+)*)(?![0-9A-Za-z.-]|_Change)")
+  gsub(pattern, "\\1\\2_Change", text, perl = TRUE)
+}
+
+.format_change_number <- function(x, plus = TRUE) {
+  if (!is.finite(x)) stop("Cannot format a non-finite change value.", call. = FALSE)
+  if (abs(x) < .Machine$double.eps * 100) x <- 0
+  if (x == 0) return("0")
+  y <- signif(abs(x), 2L)
+  decimals <- max(0L, 1L - floor(log10(y)))
+  s <- sprintf(paste0("%.", decimals, "f"), y)
+  if (grepl(".", s, fixed = TRUE)) {
+    s <- sub("0+$", "", s)
+    s <- sub("\\.$", "", s)
+  }
+  paste0(if (x < 0) "-" else if (plus) "+" else "", s)
+}
+
+.parse_count_percent <- function(x) {
+  pat <- paste0("^\\s*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\\.[0-9]+)?)",
+                "\\s*\\(\\s*([+-]?(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\\.[0-9]+)?)",
+                "\\s*%\\s*\\)\\s*$")
+  m <- regexec(pat, x, perl = TRUE); g <- regmatches(x, m)[[1]]
+  if (length(g) != 3L) return(NULL)
+  as.numeric(gsub(",", "", g[-1L], fixed = TRUE))
+}
+
+.parse_scalar <- function(x) {
+  if (!grepl("^\\s*[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\\.[0-9]+)?\\s*$",
+             x, perl = TRUE)) return(NULL)
+  as.numeric(gsub(",", "", trimws(x), fixed = TRUE))
+}
+
+.change_cell_value <- function(set1, set2) {
+  if (identical(.rtf_norm(set1), .rtf_norm(set2))) return("NC")
+  a <- .parse_count_percent(set1); b <- .parse_count_percent(set2)
+  if (!is.null(a) && !is.null(b)) {
+    dc <- b[1] - a[1]
+    if (dc == 0) return("NC")
+    return(sprintf("(%s, %s%%)", .format_change_number(dc),
+                   .format_change_number(b[2] - a[2])))
+  }
+  a <- .parse_scalar(set1); b <- .parse_scalar(set2)
+  if (!is.null(a) && !is.null(b)) {
+    d <- b - a
+    return(if (d == 0) "NC" else .format_change_number(d))
+  }
+  "CHG"
+}
+
+.change_body_rows <- function(doc) {
+  body <- doc$rows[!vapply(doc$rows, `[[`, logical(1), "is_header")]
+  if (!length(body)) return(body)
+  desc <- vapply(body, function(r) r$values[1], character(1))
+  nonindent <- nzchar(trimws(desc)) & !grepl("^[[:space:]]", desc)
+  next_indented <- vapply(seq_along(body), function(i) {
+    if (i == length(body)) return(FALSE)
+    j <- i + 1L
+    while (j <= length(body) && all(.rtf_norm(body[[j]]$values) == "")) j <- j + 1L
+    j <= length(body) && grepl("^[[:space:]]+\\S", body[[j]]$values[1], perl = TRUE)
+  }, logical(1))
+  section <- ""; seen <- new.env(parent = emptyenv())
+  for (i in seq_along(body)) {
+    vals <- body[[i]]$values
+    blank <- all(.rtf_norm(vals) == "")
+    is_section <- !blank && (all(.rtf_norm(vals[-1L]) == "") ||
+                             (nonindent[i] && next_indented[i]))
+    if (is_section) section <- vals[1]
+    base <- paste(section, vals[1], sep = "\u001f")
+    if (blank) base <- paste0(section, "\u001f<BLANK>")
+    count <- if (exists(base, envir = seen, inherits = FALSE)) get(base, seen) + 1L else 1L
+    assign(base, count, envir = seen)
+    body[[i]]$key <- paste(base, count, sep = "\u001f")
+    body[[i]]$blank <- blank; body[[i]]$section <- is_section
+  }
+  body
+}
+
+.align_change_rows <- function(a, b) {
+  ka <- vapply(a, `[[`, character(1), "key"); kb <- vapply(b, `[[`, character(1), "key")
+  n <- length(ka); m <- length(kb); dp <- matrix(0L, n + 1L, m + 1L)
+  if (n && m) for (i in n:1L) for (j in m:1L)
+    dp[i, j] <- if (identical(ka[i], kb[j])) 1L + dp[i + 1L, j + 1L]
+                else max(dp[i + 1L, j], dp[i, j + 1L])
+  out <- list(); z <- 0L; i <- 1L; j <- 1L
+  while (i <= n || j <= m) {
+    z <- z + 1L
+    if (i <= n && j <= m && identical(ka[i], kb[j])) {
+      out[[z]] <- list(i1 = i, i2 = j); i <- i + 1L; j <- j + 1L
+    } else if (i <= n && (j > m || dp[i + 1L, j] >= dp[i, j + 1L])) {
+      out[[z]] <- list(i1 = i, i2 = NA_integer_); i <- i + 1L
+    } else {
+      out[[z]] <- list(i1 = NA_integer_, i2 = j); j <- j + 1L
+    }
+  }
+  out
+}
+
+.cosmetic_footnote <- function(x) {
+  x <- gsub("\u00a0", " ", x, fixed = TRUE)
+  x <- gsub("[[:space:]]+", " ", trimws(x), perl = TRUE)
+  gsub("[[:space:]]*([[:punct:]])[[:space:]]*", "\\1", x, perl = TRUE)
+}
+
+.foot_tokens <- function(x) {
+  m <- gregexpr("[[:alnum:]]+|[^[:alnum:][:space:]]", x, perl = TRUE)[[1]]
+  if (length(m) == 1L && m[1] == -1L)
+    return(data.frame(value = character(), start = integer(), end = integer()))
+  len <- attr(m, "match.length")
+  data.frame(value = substring(x, m, m + len - 1L), start = m, end = m + len - 1L,
+             stringsAsFactors = FALSE)
+}
+
+.sequence_ops <- function(a, b, sub_cost = NULL) {
+  n <- length(a); m <- length(b); d <- matrix(0, n + 1L, m + 1L)
+  if (n) d[2:(n + 1L), 1] <- seq_len(n)
+  if (m) d[1, 2:(m + 1L)] <- seq_len(m)
+  for (i in seq_len(n)) for (j in seq_len(m)) {
+    sc <- if (identical(a[i], b[j])) 0 else if (is.null(sub_cost)) 1 else sub_cost(a[i], b[j])
+    d[i + 1L, j + 1L] <- min(d[i, j + 1L] + 1, d[i + 1L, j] + 1, d[i, j] + sc)
+  }
+  ops <- list(); i <- n; j <- m
+  while (i > 0L || j > 0L) {
+    if (i > 0L && j > 0L) {
+      sc <- if (identical(a[i], b[j])) 0 else if (is.null(sub_cost)) 1 else sub_cost(a[i], b[j])
+      if (abs(d[i + 1L, j + 1L] - (d[i, j] + sc)) < 1e-9) {
+        ops <- c(list(list(type = if (sc == 0) "equal" else "sub", i = i, j = j)), ops)
+        i <- i - 1L; j <- j - 1L; next
+      }
+    }
+    if (j > 0L && abs(d[i + 1L, j + 1L] - (d[i + 1L, j] + 1)) < 1e-9) {
+      ops <- c(list(list(type = "add", i = NA_integer_, j = j)), ops); j <- j - 1L
+    } else {
+      ops <- c(list(list(type = "del", i = i, j = NA_integer_)), ops); i <- i - 1L
+    }
+  }
+  ops
+}
+
+.mark_token_substitution <- function(old, new) {
+  ao <- strsplit(old, "", fixed = TRUE)[[1]]; bn <- strsplit(new, "", fixed = TRUE)[[1]]
+  if (length(ao) != length(bn) ||
+      !(identical(tolower(old), tolower(new)) ||
+        (grepl("^[0-9]+$", old) && grepl("^[0-9]+$", new)))) return(rep(TRUE, nchar(new)))
+  ao != bn
+}
+
+.annotate_footnote <- function(old, new) {
+  if (identical(.cosmetic_footnote(old), .cosmetic_footnote(new))) return(new)
+  a <- .foot_tokens(old); b <- .foot_tokens(new)
+  ops <- .sequence_ops(a$value, b$value)
+  flags <- rep(FALSE, nchar(new)); inserts <- list()
+  for (op_index in seq_along(ops)) {
+    op <- ops[[op_index]]
+    if (op$type == "add") flags[b$start[op$j]:b$end[op$j]] <- TRUE
+    else if (op$type == "sub") {
+      f <- .mark_token_substitution(a$value[op$i], b$value[op$j])
+      flags[b$start[op$j]:b$end[op$j]] <- f
+    } else if (op$type == "del") {
+      nextj <- vapply(ops, function(q) if (!is.na(q$j)) q$j else Inf, numeric(1))
+      pos <- if (any(nextj > 0 & is.finite(nextj))) {
+        candidates <- nextj[seq_along(nextj) > op_index & is.finite(nextj)]
+        if (length(candidates)) b$start[min(candidates)] else nchar(new) + 1L
+      } else nchar(new) + 1L
+      inserts[[as.character(pos)]] <- paste0(inserts[[as.character(pos)]], "(missing)")
+    }
+  }
+  # Whitespace between adjacent changed lexical tokens belongs to one bracket.
+  if (length(flags) && any(flags)) {
+    idx <- which(flags)
+    for (i in seq_len(length(idx) - 1L)) if (idx[i + 1L] > idx[i] + 1L) {
+      between <- substring(new, idx[i] + 1L, idx[i + 1L] - 1L)
+      if (grepl("^[[:space:]]+$", between)) flags[(idx[i] + 1L):(idx[i + 1L] - 1L)] <- TRUE
+    }
+  }
+  ch <- strsplit(new, "", fixed = TRUE)[[1]]; out <- character(); in_bracket <- FALSE
+  for (p in seq_len(length(ch) + 1L)) {
+    key <- as.character(p)
+    if (!is.null(inserts[[key]])) out <- c(out, inserts[[key]])
+    if (p > length(ch)) break
+    if (flags[p] && !in_bracket) { out <- c(out, "("); in_bracket <- TRUE }
+    if (!flags[p] && in_bracket) { out <- c(out, ")"); in_bracket <- FALSE }
+    out <- c(out, ch[p])
+  }
+  if (in_bracket) out <- c(out, ")")
+  paste0(out, collapse = "")
+}
+
+.align_footnotes <- function(f1, f2) {
+  a <- .cosmetic_footnote(f1); b <- .cosmetic_footnote(f2)
+  sim_cost <- function(x, y) {
+    den <- max(nchar(x), nchar(y), 1L)
+    min(1.5, as.numeric(adist(x, y)) / den * 2)
+  }
+  ops <- .sequence_ops(a, b, sim_cost)
+  out <- character(); changed <- FALSE
+  for (op in ops) {
+    if (op$type == "equal") out <- c(out, f2[op$j])
+    else if (op$type == "sub") {
+      val <- .annotate_footnote(f1[op$i], f2[op$j])
+      out <- c(out, val); changed <- changed || !identical(val, f2[op$j])
+    } else if (op$type == "add") { out <- c(out, paste0("(", f2[op$j], ")")); changed <- TRUE }
+    else { out <- c(out, "(missing)"); changed <- TRUE }
+  }
+  list(values = out, changed = changed)
+}
+
+.build_change_model <- function(file1, file2) {
+  d1 <- .rtf_parse_change_document(file1); d2 <- .rtf_parse_change_document(file2)
+  if (d1$ncol != d2$ncol)
+    stop("Change RTF generation requires the same number of table columns.", call. = FALSE)
+  b1 <- .change_body_rows(d1); b2 <- .change_body_rows(d2)
+  aligned <- .align_change_rows(b1, b2); rows <- list(); statuses <- list()
+  for (k in seq_along(aligned)) {
+    z <- aligned[[k]]; only1 <- is.na(z$i2); only2 <- is.na(z$i1)
+    if (only1 || only2) {
+      src <- if (only1) b1[[z$i1]] else b2[[z$i2]]
+      tag <- if (only1) "ONLY IN SET 1" else "ONLY IN SET 2"
+      vals <- c(paste0(src$values[1], " (", tag, ")"), rep(tag, d1$ncol - 1L))
+      stat <- rep(tag, d1$ncol)
+    } else {
+      r1 <- b1[[z$i1]]; r2 <- b2[[z$i2]]
+      if (isTRUE(r1$blank) && isTRUE(r2$blank)) {
+        vals <- rep("", d1$ncol); stat <- rep("NC", d1$ncol)
+      } else {
+        vals <- character(d1$ncol); stat <- rep("NC", d1$ncol)
+        vals[1] <- r2$values[1]
+        if (d1$ncol > 1L) for (cc in 2:d1$ncol) {
+          vals[cc] <- .change_cell_value(r1$values[cc], r2$values[cc]); stat[cc] <- vals[cc]
+        }
+      }
+    }
+    rows[[k]] <- list(values = vals, status = stat, i1 = z$i1, i2 = z$i2,
+                      blank = all(vals == ""))
+    statuses[[k]] <- stat
+  }
+  included <- !vapply(rows, `[[`, logical(1), "blank")
+  sm <- if (any(included)) do.call(rbind, statuses[included]) else matrix("NC", 1L, d1$ncol)
+  labels <- ifelse(vapply(seq_len(d1$ncol), function(j) all(sm[, j] == "NC"), logical(1)),
+                   "NC", "Change")
+  p1 <- vapply(d1$tail_paras, `[[`, character(1), "value")
+  p2 <- vapply(d2$tail_paras, `[[`, character(1), "value")
+  foot1 <- p1[nzchar(.rtf_norm(p1))]; foot2 <- p2[nzchar(.rtf_norm(p2))]
+  feet <- .align_footnotes(foot1, foot2)
+  list(doc1 = d1, doc2 = d2, body1 = b1, body2 = b2, rows = rows,
+       header_labels = labels, footnotes = feet$values, footnote_changed = feet$changed)
+}
+
+.nearest_template_row <- function(model_row, side, body) {
+  idx <- if (side == 1L) model_row$i1 else model_row$i2
+  if (!is.na(idx)) return(body[[idx]]$raw)
+  avail <- vapply(body, function(x) length(x$values) > 0L, logical(1))
+  if (!any(avail)) stop("No compatible body-row template is available.", call. = FALSE)
+  body[[which(avail)[1]]]$raw
+}
+
+.render_change_document <- function(model, side) {
+  doc <- if (side == 1L) model$doc1 else model$doc2
+  body <- if (side == 1L) model$body1 else model$body2
+  headers <- doc$rows[vapply(doc$rows, `[[`, logical(1), "is_header")]
+  header_values <- lapply(headers, function(h)
+    paste0(h$values, "\n", model$header_labels))
+  first_header <- .rtf_replace_row(headers[[1]]$raw, header_values[[1]])
+  # Preserve repeated-page header frequency from this template.
+  stream <- doc$rows; seen_body <- 0L; repeat_at <- integer()
+  for (i in seq_along(stream)) {
+    if (isTRUE(stream[[i]]$is_header)) {
+      if (i != 1L) repeat_at <- c(repeat_at, seen_body)
+    } else seen_body <- seen_body + 1L
+  }
+  chunks <- c(.add_change_to_table_number(doc$prefix), first_header)
+  hidx <- 2L
+  for (i in seq_along(model$rows)) {
+    while (hidx <= length(headers) && (i - 1L) >= repeat_at[hidx - 1L]) {
+      chunks <- c(chunks, "\n", .add_change_to_table_number(headers[[hidx]]$gap),
+                  .rtf_replace_row(headers[[hidx]]$raw,
+                                                   header_values[[hidx]]))
+      hidx <- hidx + 1L
+    }
+    tmpl <- .nearest_template_row(model$rows[[i]], side, body)
+    chunks <- c(chunks, "\n", .rtf_replace_row(tmpl, model$rows[[i]]$values))
+  }
+  while (hidx <= length(headers)) {
+    chunks <- c(chunks, "\n", .add_change_to_table_number(headers[[hidx]]$gap),
+                .rtf_replace_row(headers[[hidx]]$raw, header_values[[hidx]]))
+    hidx <- hidx + 1L
+  }
+
+  blank_templates <- doc$tail_paras[!nzchar(.rtf_norm(vapply(doc$tail_paras, `[[`, character(1), "value")))]
+  foot_templates <- doc$tail_paras[nzchar(.rtf_norm(vapply(doc$tail_paras, `[[`, character(1), "value")))]
+  if (length(blank_templates)) chunks <- c(chunks, "\n", blank_templates[[1]]$raw)
+  values <- model$footnotes
+  if (model$footnote_changed) values <- c("Footnote changes in brackets", values)
+  for (i in seq_along(values)) {
+    if (length(foot_templates)) tmpl <- foot_templates[[min(i, length(foot_templates))]]$raw
+    else tmpl <- "\\pard\\plain \\par"
+    chunks <- c(chunks, "\n", .rtf_replace_visible(tmpl, values[i]))
+  }
+  chunks <- c(chunks, doc$tail_suffix)
+  paste0(chunks, collapse = "")
+}
+
+.validate_change_output <- function(path, model) {
+  p <- parse_rtf(path)
+  source_has_table_number <- grepl(
+    "(?i)\\bTable[[:space:]]+[0-9]+(?:\\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z]+)*",
+    paste0(model$doc1$prefix, model$doc2$prefix), perl = TRUE)
+  if (source_has_table_number && !any(grepl("_Change", p$raw_value, fixed = TRUE)))
+    stop("Generated RTF is missing the _Change table tag.", call. = FALSE)
+  layout <- .rtf_cell_layout(path)
+  ids <- unique(layout[is_table == TRUE, row_index])
+  rows <- lapply(ids, function(id) layout[is_table == TRUE & row_index == id, raw_value])
+  is_header <- vapply(rows, function(x)
+    length(x) == length(model$header_labels) &&
+      all(endsWith(x, paste0("\n", model$header_labels))), logical(1))
+  if (!any(is_header)) stop("Generated RTF failed header status validation.", call. = FALSE)
+  actual_body <- rows[!is_header]
+  expected_body <- lapply(model$rows, `[[`, "values")
+  if (length(actual_body) != length(expected_body) ||
+      !all(vapply(seq_along(expected_body), function(i)
+        identical(enc2utf8(actual_body[[i]]), enc2utf8(expected_body[[i]])), logical(1))))
+    stop("Generated RTF failed exact aligned body validation.", call. = FALSE)
+  expected_feet <- model$footnotes
+  if (model$footnote_changed)
+    expected_feet <- c("Footnote changes in brackets", expected_feet)
+  if (length(expected_feet)) {
+    pos <- match(expected_feet, p$raw_value)
+    if (anyNA(pos) || is.unsorted(pos, strictly = TRUE))
+      stop("Generated RTF failed annotated footnote validation.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+.write_change_atomic <- function(text, path, model) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  tmp <- tempfile(pattern = paste0(".", basename(path), "."), tmpdir = dirname(path), fileext = ".tmp")
+  on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
+  .write_rtf_text(text, tmp); .validate_change_output(tmp, model)
+  backup <- ""
+  if (file.exists(path)) {
+    backup <- tempfile(pattern = paste0(".", basename(path), "."),
+                       tmpdir = dirname(path), fileext = ".bak")
+    if (!file.rename(path, backup))
+      stop(sprintf("Could not preserve the existing RTF before updating '%s'.", path),
+           call. = FALSE)
+  }
+  if (!file.rename(tmp, path)) {
+    restored <- !nzchar(backup) || (file.exists(backup) && file.rename(backup, path))
+    stop(sprintf("Could not install validated RTF '%s'%s.", path,
+                 if (restored) "" else paste0("; the prior file remains at '", backup, "'")),
+         call. = FALSE)
+  }
+  if (nzchar(backup) && file.exists(backup)) unlink(backup)
+  invisible(normalizePath(path, mustWork = FALSE))
+}
+
+#' Write one side of a paired change RTF model (compatibility interface).
+write_change_rtf <- function(source_path, result, output_path) {
+  if (is.null(result$file1) || is.null(result$file2))
+    stop("The comparison result does not identify both source RTF paths.", call. = FALSE)
+  model <- .build_change_model(result$file1, result$file2)
+  side <- if (identical(normalizePath(source_path, mustWork = FALSE), result$file2)) 2L else 1L
+  .write_change_atomic(.render_change_document(model, side), output_path, model)
+}
+
+#' Write validated Set 1 and Set 2 change RTFs for one compared pair.
+write_change_rtf_pair <- function(file1, file2, result, tool_root,
+                                  relative1 = basename(file1), relative2 = basename(file2)) {
+  model <- .build_change_model(file1, file2)
+  base <- file.path(tool_root, "logs", "RTF Changes")
+  out <- c(file.path(base, "Set 1", .change_relative_path(relative1)),
+           file.path(base, "Set 2", .change_relative_path(relative2)))
+  # Validate both temporary documents before either final path is installed.
+  txt <- c(.render_change_document(model, 1L), .render_change_document(model, 2L))
+  tmps <- character(2L)
+  on.exit(unlink(tmps[file.exists(tmps)]), add = TRUE)
+  for (i in 1:2) {
+    dir.create(dirname(out[i]), recursive = TRUE, showWarnings = FALSE)
+    tmps[i] <- tempfile(pattern = paste0(".", basename(out[i]), "."),
+                        tmpdir = dirname(out[i]), fileext = ".tmp")
+    .write_rtf_text(txt[i], tmps[i]); .validate_change_output(tmps[i], model)
+  }
+
+  # Preserve any prior pair before installing either replacement. If one
+  # install fails (for example, because a file is open on Windows), restore
+  # the entire prior pair instead of leaving a mixed or missing result set.
+  backups <- rep("", 2L)
+  for (i in 1:2) {
+    if (file.exists(out[i])) {
+      backups[i] <- tempfile(pattern = paste0(".", basename(out[i]), "."),
+                             tmpdir = dirname(out[i]), fileext = ".bak")
+      if (!file.rename(out[i], backups[i])) {
+        prior <- which(nzchar(backups) & file.exists(backups))
+        for (j in prior) file.rename(backups[j], out[j])
+        stop(sprintf("Could not preserve the existing RTF pair before updating '%s'.", out[i]),
+             call. = FALSE)
+      }
+    }
+  }
+  installed <- rep(FALSE, 2L)
+  for (i in 1:2) {
+    if (!file.rename(tmps[i], out[i])) {
+      unlink(out[installed & file.exists(out)])
+      restored <- logical(2L)
+      for (j in 1:2) {
+        restored[j] <- !nzchar(backups[j]) ||
+          (file.exists(backups[j]) && file.rename(backups[j], out[j]))
+      }
+      stranded <- backups[nzchar(backups) & file.exists(backups)]
+      detail <- if (all(restored)) "" else
+        paste0(" Prior output backup(s) remain at: ", paste(stranded, collapse = "; "))
+      stop(paste0("Could not install both validated change RTF outputs; the update was rolled back.",
+                  detail), call. = FALSE)
+    }
+    installed[i] <- TRUE
+  }
+  unlink(backups[nzchar(backups) & file.exists(backups)])
+  data.frame(set = c("Set 1", "Set 2"), source = c(file1, file2),
+    output = normalizePath(out, mustWork = FALSE), ok = TRUE, error = "",
+    stringsAsFactors = FALSE)
+}
+# Read the same displayed lines used by parse_rtf(), but retain explicit row
+# markers so a one-cell table row can still be distinguished from a paragraph.
+.rtf_cell_layout <- function(path) {
+  .need_pkg("striprtf")
+  .need_pkg("data.table")
+  CELL <- ""
+  ROW_START <- "<<<RTF_CHANGE_ROW_START>>>"
+  ROW_END   <- "<<<RTF_CHANGE_ROW_END>>>"
+
+  lines <- tryCatch(
+    striprtf::read_rtf(path, row_start = ROW_START, row_end = ROW_END,
+                       cell_end = CELL, ignore_tables = FALSE),
+    error = function(e)
+      stop(sprintf("Failed to map RTF table cells in '%s': %s", path, conditionMessage(e)),
+           call. = FALSE)
+  )
+  if (length(lines) == 0L) {
+    return(data.table::data.table(
+      row_index = integer(), col_index = integer(), raw_value = character(),
+      is_table = logical()))
+  }
+
+  is_table <- startsWith(lines, ROW_START) & endsWith(lines, ROW_END)
+  body <- lines
+  body[is_table] <- substring(
+    body[is_table], nchar(ROW_START) + 1L,
+    nchar(body[is_table]) - nchar(ROW_END))
+  parts <- strsplit(body, CELL, fixed = TRUE)
+  parts <- lapply(parts, function(p) if (length(p) == 0L) "" else p)
+  ncells <- lengths(parts)
+
+  layout <- data.table::data.table(
+    row_index = rep.int(seq_along(parts), ncells),
+    col_index = sequence(ncells),
+    raw_value = enc2utf8(unlist(parts, use.names = FALSE)),
+    is_table = rep.int(is_table, ncells)
+  )
+
+  # Guard the positional contract: adding row markers must not change the text
+  # or indices returned by the comparison parser.
+  parsed <- parse_rtf(path)
+  if (nrow(layout) != nrow(parsed) ||
+      !identical(layout$row_index, parsed$row_index) ||
+      !identical(layout$col_index, parsed$col_index) ||
+      !identical(layout$raw_value, parsed$raw_value)) {
+    stop(sprintf("Could not safely map displayed cells back to source RTF: '%s'", path),
+         call. = FALSE)
+  }
+  layout
+}
+
 
 # ============================================================================
 # Batch comparison -- compare every RTF in one folder against the same-named
@@ -477,6 +1210,10 @@ compare_rtf_folder <- function(dir1, dir2,
         status <- "ERROR"; ncells <- NA_integer_; ndiffs <- NA_integer_
         note <- conditionMessage(res)
       } else {
+        res$file1 <- file.path(dir1, file1_name)
+        res$file2 <- file.path(dir2, file2_name)
+        res$file1_name <- file1_name
+        res$file2_name <- file2_name
         results[[display_name]] <- res
         ncells <- res$n_cells; ndiffs <- res$n_diffs
         status <- if (isTRUE(res$equivalent)) "EQUIVALENT" else "DIFFERENCES"
@@ -517,6 +1254,33 @@ compare_rtf_folder <- function(dir1, dir2,
 
   list(dir1 = dir1, dir2 = dir2, summary = summary, results = results,
        totals = totals, all_equivalent = all_equivalent)
+}
+
+#' Write annotated Set 1 / Set 2 RTF copies for all successfully compared files.
+#'
+#' Unmatched and errored files have no comparison result and are intentionally
+#' omitted. A failure to annotate one pair is recorded without stopping the
+#' remaining batch.
+write_batch_change_rtfs <- function(batch, tool_root) {
+  rows <- list()
+  if (length(batch$results) == 0L) {
+    return(data.frame(set = character(), source = character(), output = character(),
+                      ok = logical(), error = character(), stringsAsFactors = FALSE))
+  }
+  k <- 0L
+  for (nm in names(batch$results)) {
+    res <- batch$results[[nm]]
+    pair <- tryCatch(
+      write_change_rtf_pair(res$file1, res$file2, res, tool_root,
+                            relative1 = res$file1_name, relative2 = res$file2_name),
+      error = function(e) data.frame(
+        set = "Pair", source = nm, output = "", ok = FALSE,
+        error = conditionMessage(e), stringsAsFactors = FALSE)
+    )
+    k <- k + 1L
+    rows[[k]] <- pair
+  }
+  do.call(rbind, rows)
 }
 
 #' Write the batch comparison report (text and/or CSV).

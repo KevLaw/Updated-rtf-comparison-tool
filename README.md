@@ -65,11 +65,11 @@ press. You only ever do this once per computer.
 | Double-click **`windows\2-Compare-RTF-Files.bat`** | Double-click **`macos/2-Compare-RTF-Files.command`** |
 
 It prompts for two file paths — **paste or type each path and press Enter** (in Windows
-Explorer, Shift + right-click a file → *Copy as path*):
+Explorer, Shift + right-click a file → *Copy as path*). Windows labels the selections as:
 
 ```
-File 1 (reference)  : <paste the first path>
-File 2 (comparison) : <paste the second path>
+File 1 (Set 1) : <paste the first path>
+File 2 (Set 2) : <paste the second path>
 ```
 
 Backslash paths and surrounding quotes are both handled. The result appears immediately —
@@ -77,6 +77,56 @@ Backslash paths and surrounding quotes are both handled. The result appears imme
 automatically**; it then asks whether to export the report as **TXT**, **CSV**, or **both**,
 and prompts for where to save it (type a full path or a folder). Finally it offers to
 compare another pair. Works with any two RTF files on the machine.
+
+The Mac runner retains its existing `reference` and `comparison` prompt labels and behavior.
+
+On Windows, after the comparison and normal report choices are complete, the tool also asks:
+
+> Would you like a separate set of RTF tables generated showing only the differences or no
+> differences identified line by line?
+
+Choose **Yes** to create a true change table in each source document's style. The first file
+selected is **Set 1**, the second is **Set 2**, and every calculation is **Set 2 minus Set 1**.
+The two generated RTFs contain the same aligned rows and results, while retaining the page
+setup, headings, column layout, spacing, and footnote styling of their respective source RTFs
+as closely as possible.
+
+The table number gains `_Change`. Each original column header is preserved and gains either
+`Change` or `NC` on a new line: the label is `NC` only when every body cell in that column is
+`NC`; otherwise it is `Change`. Generated data cells contain only:
+
+- `NC` when the supported source values are equal;
+- a signed count and displayed-percentage-point change, such as `(+5, -1%)`;
+- a signed scalar numeric change, such as `+1.5`;
+- `CHG` for a changed value that cannot be reduced to one scalar number; or
+- `ONLY IN SET 1` / `ONLY IN SET 2` for a row found in only one set.
+
+Numeric results use up to two significant figures. For count-and-percentage cells, the tool
+subtracts the percentages printed in the source cells; it does not calculate a relative rate.
+For example, `45 (5%)` in Set 1 and `50 (4%)` in Set 2 becomes `(+5, -1%)`. If the counts are
+equal, the result is `NC` even when the displayed percentages differ.
+
+Rows are aligned by their displayed Column 1 description rather than absolute row number.
+Repeated descriptions are paired in occurrence order within their section. A row found in
+only one set is inserted into the same union of rows in both outputs, and its Column 1 label
+gains `(ONLY IN SET 1)` or `(ONLY IN SET 2)`. The files keep the source name with `_change`
+inserted before `.rtf` and are saved under:
+
+```
+logs/RTF Changes/Set 1/
+logs/RTF Changes/Set 2/
+```
+
+The separate Set folders prevent same-named table pairs from overwriting one another.
+
+Footnotes use Set 2 wording in both generated RTFs. Cosmetic differences in whitespace,
+tabs, or spacing around punctuation and hyphens are ignored. For a material difference, only
+the changed Set 2 character span is enclosed in parentheses; a Set 1 deletion is shown as
+`(missing)`. The exact heading `Footnote changes in brackets` appears above the footnotes only
+when there is a material footnote change.
+
+Change-table generation is a **Windows workflow feature**. The normal comparison report and
+the macOS launchers retain their existing behavior.
 
 > **Prefer clicking files in a dialog?** Use `2b-Compare-Using-File-Picker.bat` /
 > `2b-Compare-Using-File-Picker.command` instead — same result, file-picker dialogs rather
@@ -92,7 +142,8 @@ To QC a whole set of tables in one go, compare two **folders** instead of two fi
 |---|---|
 | Double-click **`windows\2c-Compare-Folders.bat`** | Double-click **`macos/2c-Compare-Folders.command`** |
 
-Two folder pickers open — choose the **reference** folder, then the **comparison** folder.
+On Windows, two folder pickers open — choose the **Set 1** folder, then the **Set 2** folder.
+The Mac runner retains its existing reference/comparison picker labels and behavior.
 The tool compares **every `.rtf` file** in the first folder against the file of the **same
 name** in the second folder, and produces **one report that lists every file** — including the
 ones that are **EQUIVALENT** — so the report is a complete record of the set:
@@ -110,6 +161,12 @@ one folder (or that can't be read) are flagged rather than silently skipped. The
 is **archived automatically** inside the tool's `logs/reports/` folder (a `.txt` and a `.csv`),
 and you're also offered a **Save dialog** to keep your own copy wherever you like. The two
 folders must use **matching file names** for files to be paired.
+
+On Windows, the same final RTF-change-table prompt is offered after a folder run. If selected,
+the tool generates Set 1 and Set 2 change tables for every successfully paired file, including
+equivalent pairs. The same calculation, semantic row-alignment, header, and footnote rules
+described above apply. Unmatched or unreadable files remain identified in the batch report but
+do not produce a change RTF.
 
 ---
 
@@ -281,9 +338,11 @@ After generating, compare `base` against `reformatted` (expect EQUIVALENT) and a
 
 ## Run the test suite
 
-A full automated suite (171 checks) verifies every part of the tool against small
-hand-built fixtures, the large clinical example files, **and** real-world clinical
-outputs (see `tests/real_world/`).
+A full automated suite verifies every part of the tool against small hand-built fixtures,
+the large clinical example files, **and** real-world clinical outputs (see
+`tests/real_world/`). It also validates change calculations independently, semantic row
+alignment, column-level `Change`/`NC` labels, footnote annotations, generated-RTF reparsing,
+and the Windows runners.
 
 **Easy way:** double-click **`windows\3-Run-Tests.bat`** / **`macos/3-Run-Tests.command`**.
 
@@ -293,13 +352,14 @@ outputs (see `tests/real_world/`).
 Rscript R/run_tests.R
 ```
 
-You should see `RESULT: 171 passed, 0 failed`. The suite covers parsing, normalisation,
+The final line must report `0 failed, 0 warnings`. The suite covers parsing, normalisation,
 all five difference types, numeric tolerance, the report/CSV/exit codes, edge cases
 (byte-identical fast path, non-RTF input, trailing empty rows), a large-file performance
 check, the two key integration expectations (base↔reformatted EQUIVALENT;
 base↔changed = 7 differences), real-world clinical files (`tests/real_world/`), the
-**batch folder comparison** (every file listed, including matches), and the **audit log**
-(every run recorded, including no-difference runs).
+**batch folder comparison** (every file listed, including matches), the **audit log**
+(every run recorded, including no-difference runs), and the optional Windows RTF change
+tables. Pull requests are additionally checked on `windows-latest` before merge.
 
 ---
 
@@ -324,6 +384,11 @@ shape (any number of columns) with no assumptions, and row/column count mismatch
 fall out as `CELL_ONLY_IN_FILEn` entries. The comparison uses a fast `data.table` keyed
 join so it scales to large files. As an independent cross-check, the `diffdf` package (the
 R analogue of SAS `PROC COMPARE`, widely trusted in pharma QC) can corroborate the result.
+
+The optional Windows change-table writer is a separate presentation stage. It aligns body
+rows semantically by Column 1 description to prevent a row inserted in one set from shifting
+every later displayed result. This does not change the normal comparison engine or its
+positional audit evidence.
 
 ---
 
@@ -381,7 +446,7 @@ rtf-comparison-tool/
 │   └── run_tests.R            ← runs the automated test suite
 ├── windows/                   ← double-click launchers for Windows (.bat)
 ├── macos/                     ← double-click launchers for macOS (.command)
-├── logs/                      ← audit_log.csv + archived reports (DO NOT MOVE — see logs/README.txt)
+├── logs/                      ← audit log + reports + optional RTF Changes (DO NOT MOVE)
 ├── examples/                  ← provided clinical RTF files + their description
 ├── docs/                      ← the implementation specification
 └── tests/                     ← test suite, fixtures, and real-world tests

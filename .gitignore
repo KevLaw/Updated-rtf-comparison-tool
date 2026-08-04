@@ -14,6 +14,7 @@ diffdf_report.txt
 # The folder itself ships with logs/README.txt; only the runtime data is ignored.
 logs/audit_log.csv
 logs/reports/
+logs/RTF Changes/
 
 # Real-world test inputs are NOT published (may contain confidential data).
 # Add your own under tests/real_world/ locally; see that folder's README.
