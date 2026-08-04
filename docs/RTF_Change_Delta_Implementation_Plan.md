@@ -1,4 +1,15 @@
-# RTF Change-Delta Tables — Executor Implementation Plan
+# RTF Change-Delta Tables — Original Windows Executor Implementation Plan
+
+> **Cross-platform update:** The plan below records the original Windows
+> delivery. The validated feature is now also enabled for macOS. Folder-mode
+> filenames are paired by exact normalized name first, then by the conservative
+> unique like-name rule documented in `README.md`. Fuzzy candidates are also
+> validated and ranked using displayed title and Column 1 agreement. The later
+> v1.5 update adds `0`-separated filename families and an all-unmatched
+> content-only fallback. Change RTFs are generated
+> only for successfully compared pairs; unmatched files remain report-only.
+> The final repository name is
+> `Updated-rtf-comparison-tool`.
 
 ## 1. Executor mandate
 
@@ -13,10 +24,10 @@ not include them in the feature commit or pull request.
 
 The finished work must be published to:
 
-- Repository: `https://github.com/KevLaw/rtf-comparison-tool`
+- Repository: `https://github.com/KevLaw/Updated-rtf-comparison-tool`
 - Feature branch: `codex/rtf-change-deltas`
 - Target branch: `main`
-- Final ZIP: `https://github.com/KevLaw/rtf-comparison-tool/archive/refs/heads/main.zip`
+- Final ZIP: `https://github.com/KevLaw/Updated-rtf-comparison-tool/archive/refs/heads/main.zip`
 
 Do not merge until every local test and every required GitHub Windows check passes. After all
 checks pass, merge the pull request into `main`, verify the merged revision, and return the
@@ -503,10 +514,13 @@ Update:
 
 Document the exact output grammar, Set 2 minus Set 1 direction, displayed-percentage subtraction,
 two-significant-figure formatting, semantic row alignment, only-in-set rows, column-header rule,
-footnote brackets, output folders, and Windows-only availability.
+footnote brackets, output folders, and the original Windows-only availability recorded by this
+historical plan. The cross-platform update must document macOS availability and safe like-name
+pairing in both START HERE files and the README.
 
 Bump `RTF_TOOL_VERSION` from the current in-progress `1.2.0` to `1.3.0` because this materially
-changes the generated artifact contract.
+changes the generated artifact contract. The subsequent safe like-filename pairing and macOS
+enablement release is `1.4.0`; `0`-token families and all-unmatched content search are `1.5.0`.
 
 Keep `logs/RTF Changes/` ignored by Git.
 
@@ -533,7 +547,7 @@ Keep `logs/RTF Changes/` ignored by Git.
 11. Verify the PR is merged, `main` contains the merge, and the final ZIP endpoint responds.
 12. Return the PR URL, merged commit, final test result, and this active link:
 
-[Download the final validated Windows ZIP](https://github.com/KevLaw/rtf-comparison-tool/archive/refs/heads/main.zip)
+[Download the final validated cross-platform ZIP](https://github.com/KevLaw/Updated-rtf-comparison-tool/archive/refs/heads/main.zip)
 
 Do not call the ZIP final or validated before the implementation is merged into `main`.
 

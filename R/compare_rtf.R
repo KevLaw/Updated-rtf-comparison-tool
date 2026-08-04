@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.3.0"
+RTF_TOOL_VERSION <- "1.5.0"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -1117,14 +1117,16 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
 # Batch comparison -- compare every RTF in one folder against the same-named
 # file in a second folder.
 # ============================================================================
-#' Compare every RTF file in one folder against its namesake in another folder.
+#' Compare every RTF file in Set 1 against its corresponding file in Set 2.
 #'
-#' Lists the .rtf files in each folder and pairs them by file name. Every file
-#' is reported -- including the ones whose content is EQUIVALENT -- so the run
-#' doubles as a QC record. Files present in only one folder are flagged rather
-#' than silently skipped, and a parse error on one file never aborts the batch.
+#' Lists the .rtf files in each folder, pairs exact normalized names first, and
+#' then permits a conservative fuzzy-name match for a unique, highly similar
+#' remaining pair. Every file is reported -- including the ones whose content
+#' is EQUIVALENT -- so the run doubles as a QC record. Files that cannot be
+#' paired confidently are flagged rather than silently skipped, and a parse
+#' error on one file never aborts the batch.
 #'
-#' @param dir1,dir2  The reference folder and the comparison folder.
+#' @param dir1,dir2  The Set 1 folder and the Set 2 folder.
 #' @param trim,collapse_space,casefold,num_tol,rel_tol  Passed to compare_rtf().
 #' @param recursive  Also descend into sub-folders (default FALSE).
 #' @param progress   Print one line per file as it is compared (default = console).
@@ -1157,6 +1159,271 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   out
 }
 
+.batch_fuzzy_parts <- function(key) {
+  key <- gsub("\\\\", "/", key)
+  dir <- dirname(key)
+  if (identical(dir, ".")) dir <- ""
+  base <- basename(key)
+  stem <- sub("\\.[Rr][Tt][Ff]$", "", base)
+  list(dir = dir, stem = stem)
+}
+
+.batch_match_text <- function(x) {
+  x <- tolower(.rtf_norm(enc2utf8(x)))
+  x <- gsub("\\btable[[:space:]]+[0-9][0-9a-z.-]*\\b", " ", x, perl = TRUE)
+  x <- gsub("[^[:alnum:]]+", " ", x, perl = TRUE)
+  trimws(gsub("[[:space:]]+", " ", x, perl = TRUE))
+}
+
+.batch_text_similarity <- function(a, b) {
+  a <- .batch_match_text(a); b <- .batch_match_text(b)
+  if (!nzchar(a) || !nzchar(b)) return(NA_real_)
+  char_score <- 1 - as.numeric(adist(a, b)[1]) / max(nchar(a), nchar(b))
+  tokens <- function(x) {
+    z <- unique(strsplit(x, " ", fixed = TRUE)[[1]])
+    setdiff(z, c("table", "summary", "listing", "figure", "of", "by",
+                 "and", "the", "for", "a", "an", "population"))
+  }
+  ta <- tokens(a); tb <- tokens(b)
+  token_score <- if (!length(ta) || !length(tb)) NA_real_ else
+    2 * length(intersect(ta, tb)) / (length(ta) + length(tb))
+  mean(c(char_score, token_score), na.rm = TRUE)
+}
+
+.batch_set_dice <- function(a, b) {
+  a <- unique(.batch_match_text(a)); b <- unique(.batch_match_text(b))
+  a <- a[nzchar(a)]; b <- b[nzchar(b)]
+  if (!length(a) || !length(b)) return(NA_real_)
+  2 * length(intersect(a, b)) / (length(a) + length(b))
+}
+
+# Build a small rendered-content profile for fuzzy filename validation. The
+# title is the displayed text before the first table row. Column 1 excludes
+# repeated copies of the first table row, which is the source header template.
+.batch_content_profile <- function(path) {
+  tryCatch({
+    layout <- .rtf_cell_layout(path)
+    table_rows <- sort(unique(layout[is_table == TRUE, row_index]))
+    if (!length(table_rows)) stop("no displayed table rows")
+    first_table <- table_rows[[1]]
+    title <- layout[is_table == FALSE & row_index < first_table, raw_value]
+    title <- paste(title[nzchar(.rtf_norm(title))], collapse = " ")
+
+    row_signature <- function(id) {
+      paste(.batch_match_text(layout[is_table == TRUE & row_index == id, raw_value]),
+            collapse = "\u001e")
+    }
+    header_signature <- row_signature(first_table)
+    body_rows <- table_rows[
+      vapply(table_rows, row_signature, character(1)) != header_signature
+    ]
+    column1 <- layout[is_table == TRUE & row_index %in% body_rows & col_index == 1L,
+                      raw_value]
+    list(title = title, column1 = column1, error = "")
+  }, error = function(e) list(title = "", column1 = character(),
+                              error = conditionMessage(e)))
+}
+
+.batch_content_evidence <- function(a, b) {
+  title <- .batch_text_similarity(a$title, b$title)
+  column1 <- .batch_set_dice(a$column1, b$column1)
+  available <- sum(!is.na(c(title, column1)))
+  # A fuzzy name is never trusted without rendered-content evidence. Either a
+  # reasonably similar heading or meaningful Column 1 overlap is sufficient;
+  # when both are extremely different, the candidate is rejected.
+  accepted <- available > 0L &&
+    ((!is.na(title) && title >= 0.35) || (!is.na(column1) && column1 >= 0.20))
+  list(title = title, column1 = column1, accepted = accepted)
+}
+
+.batch_zero_token_evidence <- function(stem1, stem2) {
+  tokens <- function(x) {
+    z <- strsplit(tolower(x), "0", fixed = TRUE)[[1]]
+    setdiff(z[nzchar(z)], c("s", "ae"))
+  }
+  a <- tokens(stem1); b <- tokens(stem2)
+  n <- length(a); m <- length(b)
+  if (!n || !m) return(list(accepted = FALSE, similarity = 0, shared = 0L))
+  dp <- matrix(0L, n + 1L, m + 1L)
+  for (i in n:1L) for (j in m:1L)
+    dp[i, j] <- if (identical(a[i], b[j])) 1L + dp[i + 1L, j + 1L]
+                else max(dp[i + 1L, j], dp[i, j + 1L])
+  shared <- dp[1L, 1L]
+  similarity <- 2 * shared / (n + m)
+  coverage <- shared / min(n, m)
+  list(accepted = shared >= 2L && coverage >= 2 / 3,
+       similarity = similarity, shared = shared)
+}
+
+.batch_content_only_evidence <- function(a, b) {
+  evidence <- .batch_content_evidence(a, b)
+  values <- c(evidence$title, evidence$column1)
+  available <- values[!is.na(values)]
+  if (!length(available))
+    return(c(evidence, list(score = 0, accepted_content_only = FALSE)))
+  if (length(available) == 1L) {
+    accepted <- available[[1]] >= 0.85
+  } else {
+    accepted <- min(available) >= 0.20 && mean(available) >= 0.65
+  }
+  c(evidence, list(score = mean(available), accepted_content_only = accepted))
+}
+
+.batch_reciprocal_best <- function(candidates, margin) {
+  if (!nrow(candidates)) return(candidates)
+  safe_best <- function(group_col) {
+    groups <- split(seq_len(nrow(candidates)), candidates[[group_col]])
+    chosen <- character()
+    for (idx in groups) {
+      ord <- idx[order(-candidates$match_score[idx],
+                       -ifelse(is.na(candidates$similarity[idx]), 0,
+                               candidates$similarity[idx]),
+                       ifelse(is.na(candidates$distance[idx]), Inf,
+                              candidates$distance[idx]),
+                       candidates$key1[idx], candidates$key2[idx])]
+      if (length(ord) > 1L &&
+          candidates$match_score[ord[1]] - candidates$match_score[ord[2]] < margin)
+        next
+      chosen <- c(chosen, paste(candidates$key1[ord[1]], candidates$key2[ord[1]],
+                                sep = "\u001f"))
+    }
+    chosen
+  }
+  reciprocal <- intersect(safe_best("key1"), safe_best("key2"))
+  if (!length(reciprocal)) return(candidates[0L, , drop = FALSE])
+  ids <- paste(candidates$key1, candidates$key2, sep = "\u001f")
+  candidates[match(reciprocal, ids), , drop = FALSE]
+}
+
+# Pair exact normalized names first. The second pass accepts either the strict
+# edit-distance rule or a family pattern found by splitting names on "0" and
+# finding at least two informative tokens in order with two-thirds coverage.
+# All such candidates must pass the title/Column-1 content gate and be unique
+# reciprocal winners. A final pass compares every still-unmatched Set 1 RTF to
+# every still-unmatched Set 2 RTF using stronger content-only evidence.
+.batch_pair_files <- function(f1, f2, dir1, dir2) {
+  exact <- intersect(names(f1), names(f2))
+  pairs <- data.frame(
+    key1 = exact, key2 = exact, match_type = rep("exact", length(exact)),
+    distance = rep(0L, length(exact)), similarity = rep(1, length(exact)),
+    token_similarity = rep(NA_real_, length(exact)),
+    title_similarity = rep(NA_real_, length(exact)),
+    column1_similarity = rep(NA_real_, length(exact)),
+    match_score = rep(1, length(exact)),
+    stringsAsFactors = FALSE)
+
+  left1 <- setdiff(names(f1), exact)
+  left2 <- setdiff(names(f2), exact)
+  candidates <- list(); k <- 0L; rejections <- list(); rj <- 0L
+  cache1 <- new.env(parent = emptyenv()); cache2 <- new.env(parent = emptyenv())
+  profile <- function(cache, folder, files, key) {
+    if (!exists(key, envir = cache, inherits = FALSE))
+      assign(key, .batch_content_profile(file.path(folder, unname(files[[key]]))),
+             envir = cache)
+    get(key, envir = cache, inherits = FALSE)
+  }
+  for (key1 in left1) {
+    p1 <- .batch_fuzzy_parts(key1)
+    for (key2 in left2) {
+      p2 <- .batch_fuzzy_parts(key2)
+      if (!identical(p1$dir, p2$dir)) next
+      longest <- max(nchar(p1$stem), nchar(p2$stem))
+      shortest <- min(nchar(p1$stem), nchar(p2$stem))
+      if (shortest < 8L) next
+      distance <- as.integer(adist(p1$stem, p2$stem)[1])
+      similarity <- if (longest == 0L) 1 else 1 - distance / longest
+      edit_candidate <- distance <= 3L && similarity >= 0.85
+      token <- .batch_zero_token_evidence(p1$stem, p2$stem)
+      if (edit_candidate || isTRUE(token$accepted)) {
+        evidence <- .batch_content_evidence(
+          profile(cache1, dir1, f1, key1), profile(cache2, dir2, f2, key2))
+        if (!isTRUE(evidence$accepted)) {
+          rj <- rj + 1L
+          rejections[[rj]] <- data.frame(
+            key1 = key1, key2 = key2, similarity = similarity,
+            token_similarity = token$similarity,
+            title_similarity = evidence$title,
+            column1_similarity = evidence$column1,
+            candidate_type = if (edit_candidate) "fuzzy" else "zero_token",
+            stringsAsFactors = FALSE)
+          next
+        }
+        k <- k + 1L
+        filename_score <- max(similarity,
+                              if (isTRUE(token$accepted)) token$similarity else 0)
+        candidates[[k]] <- data.frame(
+          key1 = key1, key2 = key2, distance = distance,
+          similarity = similarity,
+          token_similarity = token$similarity,
+          title_similarity = evidence$title,
+          column1_similarity = evidence$column1,
+          match_score = 0.50 * filename_score +
+            0.25 * ifelse(is.na(evidence$title), 0, evidence$title) +
+            0.25 * ifelse(is.na(evidence$column1), 0, evidence$column1),
+          match_type = if (edit_candidate) "fuzzy" else "zero_token",
+          stringsAsFactors = FALSE)
+      }
+    }
+  }
+
+  template <- data.frame(key1 = character(), key2 = character(),
+                         match_type = character(), distance = integer(),
+                         similarity = numeric(), token_similarity = numeric(),
+                         title_similarity = numeric(), column1_similarity = numeric(),
+                         match_score = numeric(), stringsAsFactors = FALSE)
+  filename_matches <- template
+  if (length(candidates)) {
+    cand <- do.call(rbind, candidates)
+    filename_matches <- .batch_reciprocal_best(cand, margin = 0.05)
+    filename_matches <- filename_matches[, names(template), drop = FALSE]
+    pairs <- rbind(pairs, filename_matches)
+  }
+
+  # Content-only fallback for files without an accepted filename candidate.
+  remain1 <- setdiff(left1, filename_matches$key1)
+  remain2 <- setdiff(left2, filename_matches$key2)
+  content_candidates <- list(); ck <- 0L
+  for (key1 in remain1) for (key2 in remain2) {
+    evidence <- .batch_content_only_evidence(
+      profile(cache1, dir1, f1, key1), profile(cache2, dir2, f2, key2))
+    if (!isTRUE(evidence$accepted_content_only)) next
+    p1 <- .batch_fuzzy_parts(key1); p2 <- .batch_fuzzy_parts(key2)
+    longest <- max(nchar(p1$stem), nchar(p2$stem))
+    distance <- as.integer(adist(p1$stem, p2$stem)[1])
+    ck <- ck + 1L
+    content_candidates[[ck]] <- data.frame(
+      key1 = key1, key2 = key2, match_type = "content_only",
+      distance = distance,
+      similarity = if (longest == 0L) 1 else 1 - distance / longest,
+      token_similarity = .batch_zero_token_evidence(p1$stem, p2$stem)$similarity,
+      title_similarity = evidence$title,
+      column1_similarity = evidence$column1,
+      match_score = evidence$score, stringsAsFactors = FALSE)
+  }
+  content_matches <- template
+  if (length(content_candidates)) {
+    content_matches <- .batch_reciprocal_best(
+      do.call(rbind, content_candidates), margin = 0.10)
+    content_matches <- content_matches[, names(template), drop = FALSE]
+    pairs <- rbind(pairs, content_matches)
+  }
+
+  rejected <- if (length(rejections)) do.call(rbind, rejections) else
+    data.frame(key1 = character(), key2 = character(), similarity = numeric(),
+               token_similarity = numeric(),
+               title_similarity = numeric(), column1_similarity = numeric(),
+               candidate_type = character(),
+               stringsAsFactors = FALSE)
+  list(
+    pairs = pairs,
+    only1 = setdiff(names(f1), pairs$key1),
+    only2 = setdiff(names(f2), pairs$key2),
+    rejected = rejected,
+    content_checked1 = setNames(rep(length(remain2), length(remain1)), remain1),
+    content_checked2 = setNames(rep(length(remain1), length(remain2)), remain2)
+  )
+}
+
 compare_rtf_folder <- function(dir1, dir2,
                                trim = TRUE, collapse_space = TRUE, casefold = FALSE,
                                num_tol = 0, rel_tol = FALSE,
@@ -1183,23 +1450,62 @@ compare_rtf_folder <- function(dir1, dir2,
          call. = FALSE)
   }
 
-  rows    <- vector("list", length(all_keys))
-  results <- list()
+  matching <- .batch_pair_files(f1, f2, dir1, dir2)
+  items <- matching$pairs
+  if (length(matching$only1)) items <- rbind(items, data.frame(
+    key1 = matching$only1, key2 = NA_character_, match_type = "only1",
+    distance = NA_integer_, similarity = NA_real_, token_similarity = NA_real_,
+    title_similarity = NA_real_, column1_similarity = NA_real_,
+    match_score = NA_real_, stringsAsFactors = FALSE))
+  if (length(matching$only2)) items <- rbind(items, data.frame(
+    key1 = NA_character_, key2 = matching$only2, match_type = "only2",
+    distance = NA_integer_, similarity = NA_real_, token_similarity = NA_real_,
+    title_similarity = NA_real_, column1_similarity = NA_real_,
+    match_score = NA_real_, stringsAsFactors = FALSE))
+  display <- ifelse(!is.na(items$key1), unname(f1[items$key1]), unname(f2[items$key2]))
+  items <- items[order(tolower(display)), , drop = FALSE]
 
-  for (i in seq_along(all_keys)) {
-    key <- all_keys[[i]]
-    in1 <- key %in% names(f1)
-    in2 <- key %in% names(f2)
-    file1_name <- if (in1) unname(f1[[key]]) else NA_character_
-    file2_name <- if (in2) unname(f2[[key]]) else NA_character_
+  rows    <- vector("list", nrow(items))
+  results <- list()
+  rejected_note <- function(key, side) {
+    r <- matching$rejected
+    if (!nrow(r) || is.na(key)) return("")
+    idx <- which(r[[paste0("key", side)]] == key)
+    if (!length(idx)) return("")
+    idx <- idx[which.max(r$similarity[idx])]
+    other_key <- r[[paste0("key", if (side == 1L) 2L else 1L)]][idx]
+    other_name <- if (side == 1L) unname(f2[[other_key]]) else unname(f1[[other_key]])
+    evidence_text <- function(x) if (is.na(x)) "unavailable" else sprintf("%.1f%%", 100 * x)
+    sprintf("Like-name candidate '%s' rejected by content check (title %s, Column 1 %s)",
+            other_name, evidence_text(r$title_similarity[idx]),
+            evidence_text(r$column1_similarity[idx]))
+  }
+
+  for (i in seq_len(nrow(items))) {
+    key1 <- items$key1[[i]]; key2 <- items$key2[[i]]
+    in1 <- !is.na(key1); in2 <- !is.na(key2)
+    file1_name <- if (in1) unname(f1[[key1]]) else NA_character_
+    file2_name <- if (in2) unname(f2[[key2]]) else NA_character_
     display_name <- if (in1) file1_name else file2_name
 
     if (in1 && !in2) {
       status <- "ONLY_IN_FOLDER1"; ncells <- NA_integer_; ndiffs <- NA_integer_
-      note <- "No file of this name in folder 2"
+      note <- rejected_note(key1, 1L)
+      if (!nzchar(note)) {
+        checked <- matching$content_checked1[[key1]]
+        if (is.null(checked)) checked <- 0L
+        note <- sprintf(paste0("No exact, 0-token, or safe content match found after ",
+                               "checking %d unmatched Set 2 RTF(s)"), checked)
+      }
     } else if (!in1 && in2) {
       status <- "ONLY_IN_FOLDER2"; ncells <- NA_integer_; ndiffs <- NA_integer_
-      note <- "No file of this name in folder 1"
+      note <- rejected_note(key2, 2L)
+      if (!nzchar(note)) {
+        checked <- matching$content_checked2[[key2]]
+        if (is.null(checked)) checked <- 0L
+        note <- sprintf(paste0("No exact, 0-token, or safe content match found after ",
+                               "checking %d unmatched Set 1 RTF(s)"), checked)
+      }
     } else {
       res <- tryCatch(
         compare_rtf(file.path(dir1, file1_name), file.path(dir2, file2_name),
@@ -1217,7 +1523,24 @@ compare_rtf_folder <- function(dir1, dir2,
         results[[display_name]] <- res
         ncells <- res$n_cells; ndiffs <- res$n_diffs
         status <- if (isTRUE(res$equivalent)) "EQUIVALENT" else "DIFFERENCES"
-        note   <- if (!identical(file1_name, file2_name)) {
+        evidence_text <- function(x) if (is.na(x)) "unavailable" else sprintf("%.1f%%", 100 * x)
+        note   <- if (identical(items$match_type[[i]], "fuzzy")) {
+          sprintf(paste0("Fuzzy-matched to '%s' (edit distance %d, filename %.1f%%, ",
+                         "title %s, Column 1 %s)"), file2_name, items$distance[[i]],
+                  100 * items$similarity[[i]], evidence_text(items$title_similarity[[i]]),
+                  evidence_text(items$column1_similarity[[i]]))
+        } else if (identical(items$match_type[[i]], "zero_token")) {
+          sprintf(paste0("0-token-matched to '%s' (token %.1f%%, filename %.1f%%, ",
+                         "title %s, Column 1 %s)"), file2_name,
+                  100 * items$token_similarity[[i]], 100 * items$similarity[[i]],
+                  evidence_text(items$title_similarity[[i]]),
+                  evidence_text(items$column1_similarity[[i]]))
+        } else if (identical(items$match_type[[i]], "content_only")) {
+          sprintf(paste0("Content-matched to '%s' after all-unmatched search ",
+                         "(title %s, Column 1 %s)"), file2_name,
+                  evidence_text(items$title_similarity[[i]]),
+                  evidence_text(items$column1_similarity[[i]]))
+        } else if (!identical(file1_name, file2_name)) {
           sprintf("Matched to '%s' in folder 2 after filename normalization", file2_name)
         } else {
           ""
@@ -1263,13 +1586,20 @@ compare_rtf_folder <- function(dir1, dir2,
 #' remaining batch.
 write_batch_change_rtfs <- function(batch, tool_root) {
   rows <- list()
-  if (length(batch$results) == 0L) {
+  # A change RTF is permitted only when an exact or safely fuzzy-matched pair
+  # was actually compared. Unmatched and errored files remain report-only,
+  # even if a malformed caller happens to place an extra entry in results.
+  eligible <- batch$summary$file[
+    batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES")
+  ]
+  results <- batch$results[names(batch$results) %in% eligible]
+  if (length(results) == 0L) {
     return(data.frame(set = character(), source = character(), output = character(),
                       ok = logical(), error = character(), stringsAsFactors = FALSE))
   }
   k <- 0L
-  for (nm in names(batch$results)) {
-    res <- batch$results[[nm]]
+  for (nm in names(results)) {
+    res <- results[[nm]]
     pair <- tryCatch(
       write_change_rtf_pair(res$file1, res$file2, res, tool_root,
                             relative1 = res$file1_name, relative2 = res$file2_name),
@@ -1333,8 +1663,11 @@ write_batch_report <- function(batch, txt_path = NULL, csv_path = NULL,
   fname_w <- max(c(nchar("FILE"), nchar(s$file)))
   table_lines <- c(
     paste0(padw("FILE", fname_w), "  ", "RESULT"),
-    vapply(seq_len(nrow(s)), function(i)
-      paste0(padw(s$file[i], fname_w), "  ", result_label(s$status[i], s$n_diffs[i])),
+    vapply(seq_len(nrow(s)), function(i) {
+      note <- if (is.na(s$note[i]) || !nzchar(s$note[i])) "" else paste0("  -- ", s$note[i])
+      paste0(padw(s$file[i], fname_w), "  ",
+             result_label(s$status[i], s$n_diffs[i]), note)
+    },
       character(1))
   )
 

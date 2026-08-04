@@ -52,6 +52,8 @@ clean_path <- function(p) {
 
 say <- function(...) cat(..., "\n", sep = "")
 windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
+macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
+change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_RTF_PROMPT <- paste0(
   "Would you like a separate set of RTF tables generated showing only the ",
@@ -61,7 +63,7 @@ want_change_rtfs <- function() {
   preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
   if (preset %in% c("y", "yes", "true", "1")) return(TRUE)
   if (preset %in% c("n", "no", "false", "0")) return(FALSE)
-  if (!windows_mode) return(FALSE)
+  if (!change_prompt_mode) return(FALSE)
   answer <- tolower(clean_path(ask(paste0("\n", CHANGE_RTF_PROMPT, " (y/N): "))))
   answer %in% c("y", "yes")
 }
@@ -122,8 +124,8 @@ repeat {
   say("Leave a path blank to quit.")
   say("")
 
-  f1_label <- if (windows_mode) "File 1 (Set 1) : " else "File 1 (reference)  : "
-  f2_label <- if (windows_mode) "File 2 (Set 2) : " else "File 2 (comparison) : "
+  f1_label <- if (change_prompt_mode) "File 1 (Set 1) : " else "File 1 (reference)  : "
+  f2_label <- if (change_prompt_mode) "File 2 (Set 2) : " else "File 2 (comparison) : "
   f1 <- clean_path(ask(f1_label))
   if (!nzchar(f1)) { say("\nNo path entered - exiting."); break }
   f2 <- clean_path(ask(f2_label))
