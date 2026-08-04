@@ -116,6 +116,10 @@ logs/RTF Changes/Set 2/
 ```
 
 The separate Set folders prevent same-named table pairs from overwriting one another.
+For a folder run, the tool prints progress for every officially accepted pair and finishes
+with an expected-versus-completed pair count. If even one accepted pair cannot produce both
+validated RTFs, the run is marked incomplete and exits with error code `2`; partial output is
+never reported as a successful completed set.
 
 Footnotes use Set 2 wording in both generated RTFs. Cosmetic differences in whitespace,
 tabs, or spacing around punctuation and hyphens are ignored. For a material difference, only

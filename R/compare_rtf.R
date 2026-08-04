@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.5.0"
+RTF_TOOL_VERSION <- "1.5.1"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -410,6 +410,90 @@ compare_rtf <- function(file1, file2,
   invisible(normalizePath(path, mustWork = FALSE))
 }
 
+# Validate the RTF container with a byte-level scan before asking striprtf to
+# interpret its contents.  Counting "{" and "}" characters is insufficient:
+# escaped braces and \binN payloads are legal, while content after the root
+# group is not.  Word rejects those malformed containers even when a lenient
+# text extractor can still display their text.
+.validate_rtf_container <- function(text, path = "generated RTF") {
+  b <- as.integer(charToRaw(text)); n <- length(b)
+  whitespace <- c(9L, 10L, 13L, 32L)
+  first <- which(!b %in% whitespace)[1]
+  if (is.na(first) || first + 4L > n ||
+      !identical(b[first:(first + 4L)], c(123L, 92L, 114L, 116L, 102L))) {
+    stop(sprintf("Invalid RTF container in '%s' (missing root {\\rtf group).", path),
+         call. = FALSE)
+  }
+
+  depth <- 0L; root_seen <- FALSE; root_closed <- FALSE; i <- 1L
+  is_alpha <- function(x) (x >= 65L && x <= 90L) || (x >= 97L && x <= 122L)
+  is_digit <- function(x) x >= 48L && x <= 57L
+  while (i <= n) {
+    byte <- b[i]
+    if (root_closed) {
+      if (!byte %in% whitespace)
+        stop(sprintf("Invalid RTF container in '%s' (content follows the root group).", path),
+             call. = FALSE)
+      i <- i + 1L; next
+    }
+    if (byte == 123L) { # {
+      if (depth == 0L) {
+        if (root_seen)
+          stop(sprintf("Invalid RTF container in '%s' (multiple root groups).", path),
+               call. = FALSE)
+        root_seen <- TRUE
+      }
+      depth <- depth + 1L; i <- i + 1L; next
+    }
+    if (byte == 125L) { # }
+      if (depth <= 0L)
+        stop(sprintf("Invalid RTF container in '%s' (unexpected closing brace).", path),
+             call. = FALSE)
+      depth <- depth - 1L
+      if (depth == 0L) root_closed <- TRUE
+      i <- i + 1L; next
+    }
+    if (byte == 92L) { # backslash: control word or escaped symbol
+      if (i == n)
+        stop(sprintf("Invalid RTF container in '%s' (trailing backslash).", path),
+             call. = FALSE)
+      j <- i + 1L
+      if (is_alpha(b[j])) {
+        start_word <- j
+        while (j <= n && is_alpha(b[j])) j <- j + 1L
+        word <- rawToChar(as.raw(b[start_word:(j - 1L)]))
+        sign <- 1L
+        if (j <= n && b[j] == 45L) { sign <- -1L; j <- j + 1L }
+        start_num <- j
+        while (j <= n && is_digit(b[j])) j <- j + 1L
+        has_num <- j > start_num
+        param <- if (has_num) sign * as.integer(rawToChar(as.raw(b[start_num:(j - 1L)]))) else NA_integer_
+        if (j <= n && b[j] == 32L) j <- j + 1L
+        if (identical(tolower(word), "bin")) {
+          if (is.na(param) || param < 0L || j + param - 1L > n)
+            stop(sprintf("Invalid RTF container in '%s' (invalid \\bin payload).", path),
+                 call. = FALSE)
+          j <- j + param
+        }
+        i <- j; next
+      }
+      # A control symbol consumes the following byte (including \{, \}, \\).
+      i <- i + 2L; next
+    }
+    if (depth == 0L && !byte %in% whitespace)
+      stop(sprintf("Invalid RTF container in '%s' (content outside the root group).", path),
+           call. = FALSE)
+    if (byte == 0L)
+      stop(sprintf("Invalid RTF container in '%s' (NUL byte outside a \\bin payload).", path),
+           call. = FALSE)
+    i <- i + 1L
+  }
+  if (!root_seen || !root_closed || depth != 0L)
+    stop(sprintf("Invalid RTF container in '%s' (unterminated root group).", path),
+         call. = FALSE)
+  invisible(TRUE)
+}
+
 # Minimal, deliberately conservative RTF tokenizer.  It is used only to map
 # table rows/cells and trailing paragraphs to raw spans.  Unsupported mappings
 # fail before any destination is replaced.
@@ -558,7 +642,9 @@ compare_rtf <- function(file1, file2,
 .rtf_norm <- function(x) trimws(gsub("\\s+", " ", x, perl = TRUE))
 
 .rtf_parse_change_document <- function(path) {
-  text <- .read_rtf_text(path); layout <- .rtf_cell_layout(path); tok <- .rtf_tokens(text)
+  text <- .read_rtf_text(path)
+  .validate_rtf_container(text, path)
+  layout <- .rtf_cell_layout(path); tok <- .rtf_tokens(text)
   unsupported <- c("nesttableprops", "nestrow", "clmgf", "clmrg", "clvmgf", "clvmrg")
   bad <- unique(tok$control[tok$type == "control" & tok$control %in% unsupported])
   if (length(bad))
@@ -617,9 +703,6 @@ compare_rtf <- function(file1, file2,
   if (!identical(enc2utf8(vapply(paras, `[[`, character(1), "value")), enc2utf8(parsed_tail)))
     stop(sprintf("Footnote paragraph mapping did not validate for '%s'.", path), call. = FALSE)
 
-  opens <- sum(tok$type == "group_start")
-  closes <- sum(tok$type == "group_end")
-  if (opens != closes) stop(sprintf("Unbalanced RTF groups in '%s'.", path), call. = FALSE)
   list(path = path, text = text, rows = rows,
        prefix = substr(text, 1L, pairs[[1]][1] - 1L),
        row_gaps = NULL, tail_paras = paras, tail_suffix = suffix,
@@ -943,6 +1026,7 @@ compare_rtf <- function(file1, file2,
 }
 
 .validate_change_output <- function(path, model) {
+  .validate_rtf_container(.read_rtf_text(path), path)
   p <- parse_rtf(path)
   source_has_table_number <- grepl(
     "(?i)\\bTable[[:space:]]+[0-9]+(?:\\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z]+)*",
@@ -1584,7 +1668,7 @@ compare_rtf_folder <- function(dir1, dir2,
 #' Unmatched and errored files have no comparison result and are intentionally
 #' omitted. A failure to annotate one pair is recorded without stopping the
 #' remaining batch.
-write_batch_change_rtfs <- function(batch, tool_root) {
+write_batch_change_rtfs <- function(batch, tool_root, progress = FALSE) {
   rows <- list()
   # A change RTF is permitted only when an exact or safely fuzzy-matched pair
   # was actually compared. Unmatched and errored files remain report-only,
@@ -1592,21 +1676,30 @@ write_batch_change_rtfs <- function(batch, tool_root) {
   eligible <- batch$summary$file[
     batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES")
   ]
-  results <- batch$results[names(batch$results) %in% eligible]
-  if (length(results) == 0L) {
-    return(data.frame(set = character(), source = character(), output = character(),
+  if (length(eligible) == 0L) {
+    return(data.frame(pair = character(), set = character(), source = character(), output = character(),
                       ok = logical(), error = character(), stringsAsFactors = FALSE))
   }
   k <- 0L
-  for (nm in names(results)) {
-    res <- results[[nm]]
-    pair <- tryCatch(
-      write_change_rtf_pair(res$file1, res$file2, res, tool_root,
-                            relative1 = res$file1_name, relative2 = res$file2_name),
-      error = function(e) data.frame(
-        set = "Pair", source = nm, output = "", ok = FALSE,
-        error = conditionMessage(e), stringsAsFactors = FALSE)
-    )
+  for (pair_index in seq_along(eligible)) {
+    nm <- eligible[[pair_index]]
+    if (isTRUE(progress))
+      cat(sprintf("  Generating change RTF pair %d of %d: %s\n",
+                  pair_index, length(eligible), nm))
+    res <- batch$results[[nm]]
+    pair <- if (is.null(res)) {
+      data.frame(set = "Pair", source = nm, output = "", ok = FALSE,
+                 error = "Internal batch error: an officially compared pair has no stored result.",
+                 stringsAsFactors = FALSE)
+    } else tryCatch(
+        write_change_rtf_pair(res$file1, res$file2, res, tool_root,
+                              relative1 = res$file1_name, relative2 = res$file2_name),
+        error = function(e) data.frame(
+          set = "Pair", source = nm, output = "", ok = FALSE,
+          error = conditionMessage(e), stringsAsFactors = FALSE)
+      )
+    pair$pair <- nm
+    pair <- pair[, c("pair", "set", "source", "output", "ok", "error"), drop = FALSE]
     k <- k + 1L
     rows[[k]] <- pair
   }

@@ -110,6 +110,41 @@ jobs:
             if (-not (Test-Path $path)) { throw "Missing folder-runner output: $path" }
           }
 
+      - name: Exercise all accepted pairs in one Windows folder run
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ".ci/multi-set1", ".ci/multi-set2" | Out-Null
+          Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/exact_table.rtf"
+          Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/exact_table.rtf"
+          Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/s0ae0by0outcompe0sei.rtf"
+          Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/s0ae0by0outcompe0aeosi.rtf"
+          Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/s0exp0sum.rtf"
+          Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/s0exp0sum0bystudy.rtf"
+
+          $set1 = (Resolve-Path ".ci/multi-set1").Path
+          $set2 = (Resolve-Path ".ci/multi-set2").Path
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList @("R/run_compare_folder.R", $set1, $set2) `
+            -NoNewWindow -Wait -PassThru
+          if ($process.ExitCode -ne 1) {
+            throw "Multi-pair folder runner returned $($process.ExitCode); expected 1."
+          }
+
+          $expected = @(
+            "logs/RTF Changes/Set 1/exact_table_change.rtf",
+            "logs/RTF Changes/Set 2/exact_table_change.rtf",
+            "logs/RTF Changes/Set 1/s0ae0by0outcompe0sei_change.rtf",
+            "logs/RTF Changes/Set 2/s0ae0by0outcompe0aeosi_change.rtf",
+            "logs/RTF Changes/Set 1/s0exp0sum_change.rtf",
+            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.rtf"
+          )
+          foreach ($path in $expected) {
+            if (-not (Test-Path $path)) { throw "Missing multi-pair output: $path" }
+          }
+          if (($expected | Where-Object { Test-Path $_ }).Count -ne 6) {
+            throw "The multi-pair run did not create all six expected RTF files."
+          }
+
       - name: Reparse and validate generated Windows RTFs
         shell: pwsh
         run: |

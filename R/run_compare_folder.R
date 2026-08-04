@@ -110,7 +110,7 @@ OPTS <- "num_tol=0, rel_tol=FALSE, trim=TRUE, collapse_space=TRUE, casefold=FALS
 
 # --- run ---------------------------------------------------------------------
 say("============================================================")
-say("RTF Comparison Tool - compare two FOLDERS (batch)")
+say("RTF Comparison Tool v", RTF_TOOL_VERSION, " - compare two FOLDERS (batch)")
 say("============================================================")
 
 # Folders may be supplied up front (two command-line arguments, or the env vars
@@ -236,6 +236,7 @@ if (gui_mode && have_tcltk) {
 
 # --- optional per-source RTF change tables (Windows and macOS workflows) ----
 generate_changes <- FALSE
+change_generation_failed <- FALSE
 change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
 if (change_preset %in% c("y", "yes", "true", "1")) {
   generate_changes <- TRUE
@@ -244,22 +245,38 @@ if (change_preset %in% c("y", "yes", "true", "1")) {
   generate_changes <- ask_change_prompt()
 }
 if (generate_changes) {
-  change_files <- write_batch_change_rtfs(batch, root)
+  expected_pairs <- sum(batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES"))
+  say("\nGenerating change RTFs for all ", expected_pairs,
+      " officially compared pair(s)...")
+  change_files <- write_batch_change_rtfs(batch, root, progress = TRUE)
   successes <- change_files[change_files$ok, , drop = FALSE]
   failures <- change_files[!change_files$ok, , drop = FALSE]
-  if (nrow(successes) > 0L) {
+  successful_pairs <- length(unique(successes$pair))
+  failed_pairs <- length(unique(failures$pair))
+  complete <- expected_pairs == successful_pairs && failed_pairs == 0L &&
+              nrow(successes) == expected_pairs * 2L &&
+              all(file.exists(successes$output))
+  if (complete) {
+    say("Completed ", successful_pairs, " of ", expected_pairs,
+        " compared pair(s) (", nrow(successes), " RTF files).")
     say("RTF change tables saved under:")
     say("  ", file.path(root, "logs", "RTF Changes"))
+  } else {
+    change_generation_failed <- TRUE
+    say("ERROR: change RTF generation was incomplete: ", successful_pairs,
+        " of ", expected_pairs, " compared pair(s) completed.")
   }
   if (nrow(failures) > 0L) {
-    for (msg in failures$error) say("WARNING: ", msg)
+    for (i in seq_len(nrow(failures)))
+      say("ERROR [", failures$pair[[i]], "]: ", failures$error[[i]])
   }
-  if (gui_mode && nrow(successes) > 0L) popup(
-    "RTF change tables saved",
-    paste0(nrow(successes), " RTF change table(s) were saved under:\n\n",
-           file.path(root, "logs", "RTF Changes")), equivalent = nrow(failures) == 0L)
+  if (gui_mode) popup(
+    if (complete) "RTF change tables saved" else "RTF change tables incomplete",
+    paste0(successful_pairs, " of ", expected_pairs, " compared pair(s) completed (",
+           nrow(successes), " RTF file(s)).\n\n",
+           file.path(root, "logs", "RTF Changes")), equivalent = complete)
 }
 
 say("\nDone.")
 # Exit code: 0 = all equivalent, 1 = differences/mismatches, 2 = error.
-quit(status = if (isTRUE(batch$all_equivalent)) 0L else 1L)
+quit(status = if (change_generation_failed) 2L else if (isTRUE(batch$all_equivalent)) 0L else 1L)
