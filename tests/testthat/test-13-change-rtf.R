@@ -116,6 +116,97 @@ test_that("batch change writer emits both sets and skips unmatched files", {
                                      "orphan_omega_change.rtf")))
 })
 
+test_that("batch change writer accounts for every officially compared pair", {
+  d <- file.path(tempdir(), paste0("many_change_pairs_", as.integer(runif(1, 1, 1e9))))
+  d1 <- file.path(d, "set1"); d2 <- file.path(d, "set2")
+  dir.create(d1, recursive = TRUE); dir.create(d2, recursive = TRUE)
+
+  pairs <- list(
+    c("exact_table.rtf", "exact_table.rtf"),
+    c("s0ae0by0outcompe0sei.rtf", "s0ae0by0outcompe0aeosi.rtf"),
+    c("s0exp0sum.rtf", "s0exp0sum0bystudy.rtf")
+  )
+  for (pair in pairs) {
+    file.copy(fx("value_diff_A.rtf"), file.path(d1, pair[[1]]))
+    file.copy(fx("value_diff_B.rtf"), file.path(d2, pair[[2]]))
+  }
+
+  batch <- compare_rtf_folder(d1, d2, console = FALSE, progress = FALSE)
+  expect_equal(nrow(batch$summary), 3L)
+  expect_equal(length(batch$results), 3L)
+  expect_true(all(batch$summary$status == "DIFFERENCES"))
+
+  progress <- capture.output(
+    written <- write_batch_change_rtfs(batch, file.path(d, "tool"), progress = TRUE)
+  )
+  expect_equal(nrow(written), 6L)
+  expect_equal(length(unique(written$pair)), 3L)
+  pair_counts <- table(written$pair)
+  expect_equal(sort(names(pair_counts)), sort(batch$summary$file))
+  expect_equal(unname(as.integer(pair_counts)), rep(2L, 3L))
+  expect_true(all(written$ok))
+  expect_true(all(file.exists(written$output)))
+  expect_true(any(grepl("pair 1 of 3", progress, fixed = TRUE)))
+  expect_true(any(grepl("pair 3 of 3", progress, fixed = TRUE)))
+
+  expected_names <- sort(paste0(
+    sub("\\.[Rr][Tt][Ff]$", "", unlist(pairs, use.names = FALSE)), "_change.rtf"
+  ))
+  expect_equal(sort(basename(written$output)), expected_names)
+
+  # An inconsistent internal result must be reported as a failed official
+  # pair; it must never be silently filtered out of the generated set.
+  missing_name <- batch$summary$file[[2]]
+  incomplete <- batch
+  incomplete$results[[missing_name]] <- NULL
+  retried <- write_batch_change_rtfs(incomplete, file.path(d, "incomplete_tool"))
+  expect_equal(length(unique(retried$pair)), 3L)
+  missing_row <- retried[retried$pair == missing_name, , drop = FALSE]
+  expect_equal(nrow(missing_row), 1L)
+  expect_false(missing_row$ok)
+  expect_match(missing_row$error, "officially compared pair has no stored result", fixed = TRUE)
+})
+
+test_that("Word-incompatible content outside the root RTF group is rejected", {
+  malformed <- "{\\rtf1\\ansi This text remains visible.\\par}not-in-root"
+  expect_error(.validate_rtf_container(malformed, "malformed_change.rtf"),
+               "content follows the root group", fixed = TRUE)
+
+  balanced_but_invalid <- "{\\rtf1\\ansi First.}{\\rtf1\\ansi Second.}"
+  expect_error(.validate_rtf_container(balanced_but_invalid, "two-roots.rtf"),
+               "content follows the root group", fixed = TRUE)
+})
+
+test_that("RTF structural validation handles escaped braces and binary payloads", {
+  valid <- paste0("{\\rtf1\\ansi escaped \\{ brace \\} slash \\\\ ",
+                  "\\bin4 ", rawToChar(as.raw(c(123L, 125L, 92L, 0L))), "\\par}")
+  expect_silent(.validate_rtf_container(valid, "binary.rtf"))
+})
+
+test_that("generated change RTFs render through the native macOS document converter", {
+  skip_if_not(identical(Sys.info()[["sysname"]], "Darwin"))
+  textutil <- Sys.which("textutil")
+  skip_if(!nzchar(textutil), "macOS textutil is unavailable")
+
+  d <- file.path(tempdir(), paste0("native_render_", as.integer(runif(1, 1, 1e9))))
+  dir.create(d, recursive = TRUE)
+  result <- compare_rtf(fx("value_diff_A.rtf"), fx("value_diff_B.rtf"), console = FALSE)
+  written <- write_change_rtf_pair(fx("value_diff_A.rtf"), fx("value_diff_B.rtf"),
+                                   result, d)
+  for (i in seq_len(nrow(written))) {
+    docx <- file.path(d, paste0("rendered-", i, ".docx"))
+    output <- suppressWarnings(system2(
+      textutil, c("-convert", "docx", "-output", shQuote(docx),
+                  shQuote(written$output[[i]])),
+      stdout = TRUE, stderr = TRUE
+    ))
+    status <- attr(output, "status"); if (is.null(status)) status <- 0L
+    expect_equal(as.integer(status), 0L, info = paste(output, collapse = "\n"))
+    expect_true(file.exists(docx))
+    expect_gt(file.info(docx)$size, 0L)
+  }
+})
+
 test_that("fuzzy filename pairs generate source-named change RTFs", {
   g <- .new_change_fixture("fuzzy_batch_changes")
   d1 <- file.path(g$dir, "fuzzy1"); d2 <- file.path(g$dir, "fuzzy2")

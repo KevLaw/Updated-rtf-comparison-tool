@@ -90,6 +90,11 @@ WHAT YOU NEED
         logs/RTF Changes/Set 1/
         logs/RTF Changes/Set 2/
 
+  For a folder comparison, progress is printed for every accepted pair. The
+  final message states how many pairs completed. If even one accepted pair
+  fails to create both validated RTFs, the run is marked INCOMPLETE instead
+  of presenting a partial folder as successful.
+
   It then asks "Compare another pair? (y/N)" so you can keep going.
   Works with ANY two RTF files anywhere on the computer.
 

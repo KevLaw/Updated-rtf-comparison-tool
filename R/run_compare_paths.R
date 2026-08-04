@@ -117,7 +117,7 @@ save_export <- function(res, f1, f2, ext) {
 last_status <- 0L
 repeat {
   say("============================================================")
-  say("RTF Comparison Tool - compare by path")
+  say("RTF Comparison Tool v", RTF_TOOL_VERSION, " - compare by path")
   say("============================================================")
   say("Paste or type the full path to each RTF file, then press Enter.")
   say("(Windows backslash paths are fine; surrounding quotes are OK.)")

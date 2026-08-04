@@ -96,7 +96,7 @@ ask_change_prompt <- function() {
 
 # --- run ---------------------------------------------------------------------
 say("============================================================")
-say("RTF Comparison Tool")
+say("RTF Comparison Tool v", RTF_TOOL_VERSION)
 say("============================================================")
 
 # Paths may be supplied up front (two command-line arguments, or the env vars
