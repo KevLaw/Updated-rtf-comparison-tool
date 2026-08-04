@@ -31,7 +31,12 @@ jobs:
 
       - name: Install required R packages
         shell: pwsh
-        run: Rscript R/install_packages.R
+        run: |
+          # Use the Windows binary repository configured by setup-r. The
+          # end-user installer is then run as an idempotence/availability check
+          # without depending on a second CRAN download path.
+          Rscript -e 'install.packages(c("striprtf", "diffdf", "data.table", "testthat", "optparse"), repos = Sys.getenv("RSPM"))'
+          Rscript R/install_packages.R
 
       - name: Run full test suite
         shell: pwsh
