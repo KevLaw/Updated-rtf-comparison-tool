@@ -52,6 +52,7 @@ jobs:
       - name: Exercise path runner without dialogs
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           @($set1, $set2, "", "") | & Rscript R/run_compare_paths.R
@@ -70,6 +71,7 @@ jobs:
       - name: Exercise file-picker runner without dialogs
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           & Rscript R/run_compare.R $set1 $set2
@@ -88,6 +90,7 @@ jobs:
       - name: Exercise folder runner without dialogs
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path ".ci/set1").Path
           $set2 = (Resolve-Path ".ci/set2").Path
           & Rscript R/run_compare_folder.R $set1 $set2
