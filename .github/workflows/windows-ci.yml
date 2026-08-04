@@ -52,11 +52,13 @@ jobs:
       - name: Exercise path runner without dialogs
         shell: pwsh
         run: |
-          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
-          @($set1, $set2, "", "") | & Rscript R/run_compare_paths.R
-          $status = $LASTEXITCODE
+          @($set1, $set2, "", "") | Set-Content -Encoding utf8 ".ci/path-input.txt"
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList "R/run_compare_paths.R" `
+            -RedirectStandardInput ".ci/path-input.txt" -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
           if ($status -ne 1) {
             throw "Path runner returned $status; expected 1 for known differences."
           }
@@ -71,11 +73,12 @@ jobs:
       - name: Exercise file-picker runner without dialogs
         shell: pwsh
         run: |
-          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
-          & Rscript R/run_compare.R $set1 $set2
-          $status = $LASTEXITCODE
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList @("R/run_compare.R", $set1, $set2) `
+            -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
           if ($status -ne 1) {
             throw "File-picker runner returned $status; expected 1 for known differences."
           }
@@ -90,11 +93,12 @@ jobs:
       - name: Exercise folder runner without dialogs
         shell: pwsh
         run: |
-          $PSNativeCommandUseErrorActionPreference = $false
           $set1 = (Resolve-Path ".ci/set1").Path
           $set2 = (Resolve-Path ".ci/set2").Path
-          & Rscript R/run_compare_folder.R $set1 $set2
-          $status = $LASTEXITCODE
+          $process = Start-Process -FilePath (Get-Command Rscript).Source `
+            -ArgumentList @("R/run_compare_folder.R", $set1, $set2) `
+            -NoNewWindow -Wait -PassThru
+          $status = $process.ExitCode
           if ($status -ne 1) {
             throw "Folder runner returned $status; expected 1 for known differences."
           }
