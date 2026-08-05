@@ -2,7 +2,7 @@
 # ============================================================================
 #  Compare Set 1 and Set 2 RTF files by PATH (macOS)
 #  Double-click this file, paste/type both paths, then optionally generate
-#  paired RTF change tables.
+#  paired CSV change tables.
 #  A report is saved next to the first file.
 #  (Prefer clicking files instead? Use 2b-Compare-Using-File-Picker.command.)
 # ============================================================================

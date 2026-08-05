@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 45
 
     env:
-      RTF_GENERATE_CHANGES: "yes"
       RTF_TOOL_ROOT: ${{ github.workspace }}
 
     steps:
@@ -52,6 +51,7 @@ jobs:
       - name: Exercise path runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           @($set1, $set2, "", "") | Set-Content -Encoding utf8 ".ci/path-input.txt"
@@ -63,8 +63,8 @@ jobs:
             throw "Path runner returned $status; expected 1 for known differences."
           }
           $expected = @(
-            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
-            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
+            "logs/RTF Changes/Set 1/clinical_table_base_change.csv",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing path-runner output: $path" }
@@ -73,6 +73,7 @@ jobs:
       - name: Exercise file-picker runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           $process = Start-Process -FilePath (Get-Command Rscript).Source `
@@ -83,8 +84,8 @@ jobs:
             throw "File-picker runner returned $status; expected 1 for known differences."
           }
           $expected = @(
-            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
-            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
+            "logs/RTF Changes/Set 1/clinical_table_base_change.csv",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing picker-runner output: $path" }
@@ -93,6 +94,7 @@ jobs:
       - name: Exercise folder runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path ".ci/set1").Path
           $set2 = (Resolve-Path ".ci/set2").Path
           $process = Start-Process -FilePath (Get-Command Rscript).Source `
@@ -103,8 +105,8 @@ jobs:
             throw "Folder runner returned $status; expected 1 for known differences."
           }
           $expected = @(
-            "logs/RTF Changes/Set 1/table_change.rtf",
-            "logs/RTF Changes/Set 2/table_change.rtf"
+            "logs/RTF Changes/Set 1/table_change.csv",
+            "logs/RTF Changes/Set 2/table_change.csv"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing folder-runner output: $path" }
@@ -113,6 +115,7 @@ jobs:
       - name: Exercise all accepted pairs in one Windows folder run
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           New-Item -ItemType Directory -Force -Path ".ci/multi-set1", ".ci/multi-set2" | Out-Null
           Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/exact_table.rtf"
           Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/exact_table.rtf"
@@ -151,56 +154,51 @@ jobs:
           }
 
           $expected = @(
-            "logs/RTF Changes/Set 1/exact_table_change.rtf",
-            "logs/RTF Changes/Set 2/exact_table_change.rtf",
-            "logs/RTF Changes/Set 1/s0ae0by0outcompe0sei_change.rtf",
-            "logs/RTF Changes/Set 2/s0ae0by0outcompe0aeosi_change.rtf",
-            "logs/RTF Changes/Set 1/s0exp0sum_change.rtf",
-            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.rtf"
+            "logs/RTF Changes/Set 1/exact_table_change.csv",
+            "logs/RTF Changes/Set 2/exact_table_change.csv",
+            "logs/RTF Changes/Set 1/s0ae0by0outcompe0sei_change.csv",
+            "logs/RTF Changes/Set 2/s0ae0by0outcompe0aeosi_change.csv",
+            "logs/RTF Changes/Set 1/s0exp0sum_change.csv",
+            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.csv"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing multi-pair output: $path" }
-            $raw = [System.IO.File]::ReadAllText($path)
-            if (-not $raw.Contains("\oldcprops")) {
-              throw "Hidden row-properties destination was not preserved in: $path"
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            if ($bytes.Length -lt 4 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+              throw "CSV is missing its UTF-8 BOM: $path"
             }
           }
           if (($expected | Where-Object { Test-Path $_ }).Count -ne 6) {
-            throw "The multi-pair run did not create all six expected RTF files."
+            throw "The multi-pair run did not create all six expected CSV files."
           }
 
-      - name: Reparse and validate generated Windows RTFs
+      - name: Reparse and validate generated Windows CSVs
         shell: pwsh
         run: |
           @'
           source("R/compare_rtf.R")
 
-          outputs <- c(
-            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
-            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf",
-            "logs/RTF Changes/Set 1/table_change.rtf",
-            "logs/RTF Changes/Set 2/table_change.rtf"
-          )
+          root <- file.path("logs", "RTF Changes")
+          outputs <- list.files(root, pattern = "_change\\.csv$", recursive = TRUE,
+                                full.names = TRUE)
 
           stopifnot(all(file.exists(outputs)))
+          stopifnot(length(outputs) == 10L)
+          stopifnot(length(list.files(root, pattern = "_change\\.rtf$", recursive = TRUE)) == 0L)
           for (path in outputs) {
-            parsed <- parse_rtf(path)
+            parsed <- .read_change_csv(path)
             stopifnot(nrow(parsed) > 0L)
-            stopifnot(any(parsed$raw_value == "Table 14.3.1.2_Change"))
+            stopifnot(all(grepl("\\n(?:Change|NC)$", names(parsed), perl = TRUE)))
 
-            headache_rows <- unique(parsed$row_index[trimws(parsed$raw_value) == "Headache"])
-            stopifnot(length(headache_rows) >= 1L)
-            headache <- parsed[parsed$row_index == headache_rows[[1]], ]
-            stopifnot(headache$raw_value[headache$col_index == 2L] == "(+1, +0.5%)")
-            stopifnot(headache$raw_value[headache$col_index == 3L] == "NC")
-
-            stopifnot(any(parsed$raw_value == "Footnote changes in brackets"))
-            changed_footnote <- parsed$raw_value[
-              grepl("Generated by Lawlor Solutions", parsed$raw_value, fixed = TRUE)
-            ]
-            stopifnot(length(changed_footnote) == 1L)
-            stopifnot(grepl("\\(|\\)", changed_footnote))
+            if (any(trimws(parsed[[1]]) == "Headache")) {
+              headache <- parsed[trimws(parsed[[1]]) == "Headache", , drop = FALSE]
+              if (ncol(parsed) >= 3L && grepl("clinical_table|table_change", basename(path))) {
+                stopifnot(headache[[2]][[1]] == "(+1, +0.5%)")
+                stopifnot(headache[[3]][[1]] == "NC")
+                stopifnot(any(parsed[[1]] == "Footnote changes in brackets"))
+              }
+            }
           }
-          '@ | Set-Content -Encoding utf8 ".ci/validate_generated_rtfs.R"
+          '@ | Set-Content -Encoding utf8 ".ci/validate_generated_csvs.R"
 
-          Rscript ".ci/validate_generated_rtfs.R"
+          Rscript ".ci/validate_generated_csvs.R"

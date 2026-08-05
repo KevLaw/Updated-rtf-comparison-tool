@@ -55,16 +55,16 @@ windows_mode <- identical(Sys.info()[["sysname"]], "Windows")
 macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
 change_prompt_mode <- windows_mode || macos_mode
 
-CHANGE_RTF_PROMPT <- paste0(
-  "Would you like a separate set of RTF tables generated showing only the ",
+CHANGE_CSV_PROMPT <- paste0(
+  "Would you like a separate set of CSV tables generated showing only the ",
   "differences or no differences identified line by line?")
 
-want_change_rtfs <- function() {
+want_change_csvs <- function() {
   preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
   if (preset %in% c("y", "yes", "true", "1")) return(TRUE)
   if (preset %in% c("n", "no", "false", "0")) return(FALSE)
   if (!change_prompt_mode) return(FALSE)
-  answer <- tolower(clean_path(ask(paste0("\n", CHANGE_RTF_PROMPT, " (y/N): "))))
+  answer <- tolower(clean_path(ask(paste0("\n", CHANGE_CSV_PROMPT, " (y/N): "))))
   answer %in% c("y", "yes")
 }
 
@@ -162,13 +162,15 @@ repeat {
         error = function(e) { say("WARNING: could not update audit log: ", conditionMessage(e)); NA })
       if (!is.na(audit_path)) say("Audit log updated: ", audit_path)
 
-      if (want_change_rtfs()) {
+      if (want_change_csvs()) {
         change_files <- tryCatch(
-          write_change_rtf_pair(f1, f2, res, root),
-          error = function(e) { say("WARNING: could not generate RTF change tables: ",
+          write_change_csv_pair(f1, f2, res, root),
+          error = function(e) { say("WARNING: could not generate CSV change tables: ",
                                     conditionMessage(e)); NULL })
-        if (!is.null(change_files)) {
-          say("RTF change tables saved:")
+        if (is.null(change_files)) {
+          last_status <- 2L
+        } else {
+          say("CSV change tables saved:")
           for (p in change_files$output) say("  ", p)
         }
       }

@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.5.3"
+RTF_TOOL_VERSION <- "1.6.0"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -1052,10 +1052,10 @@ compare_rtf <- function(file1, file2,
   list(values = out, changed = changed)
 }
 
-.build_change_model <- function(file1, file2) {
-  d1 <- .rtf_parse_change_document(file1); d2 <- .rtf_parse_change_document(file2)
+.build_change_model_from_docs <- function(d1, d2) {
   if (d1$ncol != d2$ncol)
-    stop("Change RTF generation requires the same number of table columns.", call. = FALSE)
+    stop("Change-table generation requires the same number of normalized columns.",
+         call. = FALSE)
   b1 <- .change_body_rows(d1); b2 <- .change_body_rows(d2)
   aligned <- .align_change_rows(b1, b2); rows <- list(); statuses <- list()
   for (k in seq_along(aligned)) {
@@ -1091,6 +1091,11 @@ compare_rtf <- function(file1, file2,
   feet <- .align_footnotes(foot1, foot2)
   list(doc1 = d1, doc2 = d2, body1 = b1, body2 = b2, rows = rows,
        header_labels = labels, footnotes = feet$values, footnote_changed = feet$changed)
+}
+
+.build_change_model <- function(file1, file2) {
+  d1 <- .rtf_parse_change_document(file1); d2 <- .rtf_parse_change_document(file2)
+  .build_change_model_from_docs(d1, d2)
 }
 
 .nearest_template_row <- function(model_row, side, body) {
@@ -1319,6 +1324,188 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
          call. = FALSE)
   }
   layout
+}
+
+# ============================================================================
+# Reliable CSV change-table output
+# ============================================================================
+# CSV generation deliberately stops at rendered cell text. It does not map
+# values back into raw RTF markup, so hidden Word/SAS metadata, pagination,
+# stale row properties, and formatting destinations cannot corrupt an output.
+
+.change_csv_name <- function(path) {
+  nm <- basename(path)
+  stem <- if (grepl("\\.rtf$", nm, ignore.case = TRUE))
+    sub("\\.[Rr][Tt][Ff]$", "", nm) else nm
+  paste0(stem, "_change.csv")
+}
+
+.change_csv_relative_path <- function(path) {
+  d <- dirname(path); nm <- .change_csv_name(path)
+  if (identical(d, ".")) nm else file.path(d, nm)
+}
+
+.pad_change_values <- function(x, n) {
+  x <- enc2utf8(as.character(x))
+  if (length(x) < n) c(x, rep("", n - length(x))) else x[seq_len(n)]
+}
+
+.parse_change_csv_document <- function(path) {
+  layout <- .rtf_cell_layout(path)
+  table_ids <- unique(layout[is_table == TRUE, row_index])
+  if (!length(table_ids))
+    stop(sprintf("No rendered RTF table found in '%s'.", path), call. = FALSE)
+
+  raw_rows <- lapply(table_ids, function(id)
+    layout[is_table == TRUE & row_index == id, raw_value])
+  ncol <- max(lengths(raw_rows))
+  rows <- lapply(seq_along(raw_rows), function(i) list(
+    raw = "", values = .pad_change_values(raw_rows[[i]], ncol),
+    row_index = table_ids[[i]], is_header = FALSE))
+  signature <- vapply(rows, function(r)
+    paste(.rtf_norm(r$values), collapse = "\u001e"), character(1))
+  is_header <- signature == signature[[1]]
+  for (i in seq_along(rows)) rows[[i]]$is_header <- is_header[[i]]
+
+  title_values <- layout[is_table == FALSE & row_index < min(table_ids), raw_value]
+  foot_values <- layout[is_table == FALSE & row_index > max(table_ids), raw_value]
+  list(path = path, rows = rows, ncol = ncol,
+       titles = enc2utf8(title_values[nzchar(.rtf_norm(title_values))]),
+       tail_paras = lapply(enc2utf8(foot_values), function(x) list(raw = "", value = x)))
+}
+
+.pad_change_csv_document <- function(doc, ncol) {
+  doc$rows <- lapply(doc$rows, function(row) {
+    row$values <- .pad_change_values(row$values, ncol)
+    row
+  })
+  doc$ncol <- ncol
+  doc
+}
+
+.build_change_csv_model <- function(file1, file2) {
+  d1 <- .parse_change_csv_document(file1)
+  d2 <- .parse_change_csv_document(file2)
+  ncol <- max(d1$ncol, d2$ncol)
+  d1 <- .pad_change_csv_document(d1, ncol)
+  d2 <- .pad_change_csv_document(d2, ncol)
+  .build_change_model_from_docs(d1, d2)
+}
+
+.change_csv_frame <- function(model, side) {
+  doc <- if (side == 1L) model$doc1 else model$doc2
+  header_rows <- doc$rows[vapply(doc$rows, `[[`, logical(1), "is_header")]
+  header <- .pad_change_values(header_rows[[1]]$values,
+                               length(model$header_labels))
+  empty <- !nzchar(.rtf_norm(header))
+  header[empty] <- paste("Column", which(empty))
+  column_names <- paste0(header, "\n", model$header_labels)
+  ncol <- length(column_names)
+  one_column_row <- function(value)
+    c(enc2utf8(value), if (ncol > 1L) rep("", ncol - 1L) else character())
+
+  blocks <- list()
+  titles <- .add_change_to_table_number(doc$titles)
+  if (length(titles)) {
+    blocks[[length(blocks) + 1L]] <- do.call(rbind, lapply(titles, one_column_row))
+    blocks[[length(blocks) + 1L]] <- matrix("", nrow = 1L, ncol = ncol)
+  }
+  if (length(model$rows))
+    blocks[[length(blocks) + 1L]] <- do.call(rbind, lapply(model$rows, `[[`, "values"))
+
+  feet <- model$footnotes
+  if (model$footnote_changed)
+    feet <- c("Footnote changes in brackets", feet)
+  if (length(feet)) {
+    blocks[[length(blocks) + 1L]] <- matrix("", nrow = 1L, ncol = ncol)
+    blocks[[length(blocks) + 1L]] <- do.call(rbind, lapply(feet, one_column_row))
+  }
+  values <- if (length(blocks)) do.call(rbind, blocks) else
+    matrix(character(), nrow = 0L, ncol = ncol)
+  frame <- as.data.frame(values, stringsAsFactors = FALSE, check.names = FALSE)
+  names(frame) <- column_names
+  frame
+}
+
+.read_change_csv <- function(path) {
+  # Base R's CSV reader correctly unescapes doubled quotes inside multiline
+  # header fields. Some data.table releases retain those doubled quotes when a
+  # header also contains an embedded newline, so use the stricter round-trip
+  # path here for consistent macOS and Windows validation.
+  utils::read.csv(path, header = TRUE, check.names = FALSE,
+                  stringsAsFactors = FALSE, colClasses = "character",
+                  na.strings = NULL, strip.white = FALSE,
+                  blank.lines.skip = FALSE, fileEncoding = "UTF-8-BOM")
+}
+
+.validate_change_csv_output <- function(path, expected) {
+  actual <- .read_change_csv(path)
+  if (!identical(enc2utf8(names(actual)), enc2utf8(names(expected))) ||
+      !identical(dim(actual), dim(expected)) ||
+      !identical(enc2utf8(as.matrix(actual)), enc2utf8(as.matrix(expected))))
+    stop(sprintf("Generated change CSV failed exact round-trip validation: '%s'.", path),
+         call. = FALSE)
+  invisible(TRUE)
+}
+
+.write_change_csv_frame <- function(frame, path) {
+  .need_pkg("data.table")
+  data.table::fwrite(frame, path, sep = ",", quote = "auto", na = "",
+                     bom = TRUE, eol = "\r\n")
+  invisible(path)
+}
+
+#' Write validated Set 1 and Set 2 change CSVs for one compared RTF pair.
+write_change_csv_pair <- function(file1, file2, result, tool_root,
+                                  relative1 = basename(file1),
+                                  relative2 = basename(file2)) {
+  model <- .build_change_csv_model(file1, file2)
+  base <- file.path(tool_root, "logs", "RTF Changes")
+  out <- c(file.path(base, "Set 1", .change_csv_relative_path(relative1)),
+           file.path(base, "Set 2", .change_csv_relative_path(relative2)))
+  for (destination in unique(dirname(out)))
+    dir.create(destination, recursive = TRUE, showWarnings = FALSE)
+
+  frames <- list(.change_csv_frame(model, 1L), .change_csv_frame(model, 2L))
+  tmps <- character(2L)
+  on.exit(unlink(tmps[file.exists(tmps)]), add = TRUE)
+  for (i in 1:2) {
+    tmps[i] <- tempfile(pattern = paste0(".", basename(out[i]), "."),
+                        tmpdir = dirname(out[i]), fileext = ".tmp")
+    .write_change_csv_frame(frames[[i]], tmps[i])
+    .validate_change_csv_output(tmps[i], frames[[i]])
+  }
+
+  backups <- rep("", 2L)
+  for (i in 1:2) if (file.exists(out[i])) {
+    backups[i] <- tempfile(pattern = paste0(".", basename(out[i]), "."),
+                           tmpdir = dirname(out[i]), fileext = ".bak")
+    if (!file.rename(out[i], backups[i])) {
+      prior <- which(nzchar(backups) & file.exists(backups))
+      for (j in prior) file.rename(backups[j], out[j])
+      stop(sprintf("Could not preserve the existing CSV pair before updating '%s'.", out[i]),
+           call. = FALSE)
+    }
+  }
+  installed <- rep(FALSE, 2L)
+  for (i in 1:2) {
+    if (!file.rename(tmps[i], out[i])) {
+      unlink(out[installed & file.exists(out)])
+      restored <- logical(2L)
+      for (j in 1:2) restored[j] <- !nzchar(backups[j]) ||
+        (file.exists(backups[j]) && file.rename(backups[j], out[j]))
+      stranded <- backups[nzchar(backups) & file.exists(backups)]
+      detail <- if (all(restored)) "" else
+        paste0(" Prior output backup(s) remain at: ", paste(stranded, collapse = "; "))
+      stop(paste0("Could not install both validated change CSV outputs; rollback attempted.",
+                  detail), call. = FALSE)
+    }
+    installed[i] <- TRUE
+  }
+  unlink(backups[nzchar(backups) & file.exists(backups)])
+  data.frame(set = c("Set 1", "Set 2"), source = c(file1, file2),
+             output = normalizePath(out, mustWork = FALSE), ok = TRUE,
+             error = "", stringsAsFactors = FALSE)
 }
 
 
@@ -1827,6 +2014,44 @@ write_batch_change_rtfs <- function(batch, tool_root, progress = FALSE) {
     pair <- pair[, c("pair", "set", "source", "output", "ok", "error"), drop = FALSE]
     k <- k + 1L
     rows[[k]] <- pair
+  }
+  do.call(rbind, rows)
+}
+
+#' Write Set 1 / Set 2 change CSVs for every officially compared RTF pair.
+#'
+#' Unmatched and errored files are report-only. Each accepted pair is attempted
+#' independently and accounted for in the returned status table.
+write_batch_change_csvs <- function(batch, tool_root, progress = FALSE) {
+  rows <- list()
+  eligible <- batch$summary$file[
+    batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES")
+  ]
+  if (!length(eligible))
+    return(data.frame(pair = character(), set = character(), source = character(),
+                      output = character(), ok = logical(), error = character(),
+                      stringsAsFactors = FALSE))
+
+  for (pair_index in seq_along(eligible)) {
+    nm <- eligible[[pair_index]]
+    if (isTRUE(progress))
+      cat(sprintf("  Generating change CSV pair %d of %d: %s\n",
+                  pair_index, length(eligible), nm))
+    res <- batch$results[[nm]]
+    pair <- if (is.null(res)) {
+      data.frame(set = "Pair", source = nm, output = "", ok = FALSE,
+                 error = "Internal batch error: an officially compared pair has no stored result.",
+                 stringsAsFactors = FALSE)
+    } else tryCatch(
+      write_change_csv_pair(res$file1, res$file2, res, tool_root,
+                            relative1 = res$file1_name, relative2 = res$file2_name),
+      error = function(e) data.frame(
+        set = "Pair", source = nm, output = "", ok = FALSE,
+        error = conditionMessage(e), stringsAsFactors = FALSE)
+    )
+    pair$pair <- nm
+    rows[[pair_index]] <- pair[, c("pair", "set", "source", "output", "ok", "error"),
+                               drop = FALSE]
   }
   do.call(rbind, rows)
 }

@@ -389,20 +389,20 @@ test_that("content-only pairs generate source-named change RTFs", {
                c("alpha_source_change.rtf", "unrelated_filename_change.rtf"))
 })
 
-test_that("Windows and macOS runners contain the required final change-table prompt", {
+test_that("Windows and macOS runners contain the required final CSV change-table prompt", {
   required <- paste0(
-    "Would you like a separate set of RTF tables generated showing only the ",
+    "Would you like a separate set of CSV tables generated showing only the ",
     "differences or no differences identified line by line?")
   for (script in c("run_compare_paths.R", "run_compare.R", "run_compare_folder.R")) {
     text <- paste(readLines(file.path(RTF_ROOT, "R", script), warn = FALSE), collapse = " ")
-    expect_match(text, "Would you like a separate set of RTF tables generated", fixed = TRUE)
+    expect_match(text, "Would you like a separate set of CSV tables generated", fixed = TRUE)
     expect_match(text, "differences or no differences identified line by line?", fixed = TRUE)
     expect_match(text, "Darwin", fixed = TRUE)
   }
   expect_true(nzchar(required))
 })
 
-test_that("macOS path workflow offers the prompt and generates review RTFs", {
+test_that("macOS path workflow offers the prompt and generates review CSVs", {
   skip_if_not(identical(Sys.info()[["sysname"]], "Darwin"))
   rscript <- file.path(R.home("bin"), "Rscript")
   troot <- file.path(tempdir(), paste0("mac_change_runner_", as.integer(runif(1, 1, 1e9))))
@@ -430,15 +430,15 @@ test_that("macOS path workflow offers the prompt and generates review RTFs", {
   st <- attr(out, "status"); if (is.null(st)) st <- 0L
 
   expect_equal(as.integer(st), 1L)
-  expect_true(any(grepl("Would you like a separate set of RTF tables", out,
+  expect_true(any(grepl("Would you like a separate set of CSV tables", out,
                         fixed = TRUE)))
   expect_true(file.exists(file.path(troot, "logs", "RTF Changes", "Set 1",
-                                    "set1_change.rtf")))
+                                    "set1_change.csv")))
   expect_true(file.exists(file.path(troot, "logs", "RTF Changes", "Set 2",
-                                    "set2_change.rtf")))
+                                    "set2_change.csv")))
 })
 
-test_that("single-file picker runner can generate change RTFs end to end", {
+test_that("single-file picker runner can generate change CSVs end to end", {
   rscript <- file.path(R.home("bin"), "Rscript")
   troot <- file.path(tempdir(), paste0("change_runner_", as.integer(runif(1, 1, 1e9))))
   dir.create(file.path(troot, "R"), recursive = TRUE, showWarnings = FALSE)
@@ -464,7 +464,7 @@ test_that("single-file picker runner can generate change RTFs end to end", {
   st <- attr(out, "status"); if (is.null(st)) st <- 0L
   expect_equal(as.integer(st), 1L)
   expect_true(file.exists(file.path(troot, "logs", "RTF Changes", "Set 1",
-                                    "set1_change.rtf")))
+                                    "set1_change.csv")))
   expect_true(file.exists(file.path(troot, "logs", "RTF Changes", "Set 2",
-                                    "set2_change.rtf")))
+                                    "set2_change.csv")))
 })
