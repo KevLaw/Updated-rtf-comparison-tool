@@ -64,7 +64,9 @@ jobs:
           }
           $expected = @(
             "logs/RTF Changes/Set 1/clinical_table_base_change.csv",
-            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv"
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv",
+            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing path-runner output: $path" }
@@ -85,7 +87,9 @@ jobs:
           }
           $expected = @(
             "logs/RTF Changes/Set 1/clinical_table_base_change.csv",
-            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv"
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.csv",
+            "logs/RTF Changes/Set 1/clinical_table_base_change.rtf",
+            "logs/RTF Changes/Set 2/clinical_table_changed_change.rtf"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing picker-runner output: $path" }
@@ -106,7 +110,9 @@ jobs:
           }
           $expected = @(
             "logs/RTF Changes/Set 1/table_change.csv",
-            "logs/RTF Changes/Set 2/table_change.csv"
+            "logs/RTF Changes/Set 2/table_change.csv",
+            "logs/RTF Changes/Set 1/table_change.rtf",
+            "logs/RTF Changes/Set 2/table_change.rtf"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing folder-runner output: $path" }
@@ -159,20 +165,28 @@ jobs:
             "logs/RTF Changes/Set 1/s0ae0by0outcompe0sei_change.csv",
             "logs/RTF Changes/Set 2/s0ae0by0outcompe0aeosi_change.csv",
             "logs/RTF Changes/Set 1/s0exp0sum_change.csv",
-            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.csv"
+            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.csv",
+            "logs/RTF Changes/Set 1/exact_table_change.rtf",
+            "logs/RTF Changes/Set 2/exact_table_change.rtf",
+            "logs/RTF Changes/Set 1/s0ae0by0outcompe0sei_change.rtf",
+            "logs/RTF Changes/Set 2/s0ae0by0outcompe0aeosi_change.rtf",
+            "logs/RTF Changes/Set 1/s0exp0sum_change.rtf",
+            "logs/RTF Changes/Set 2/s0exp0sum0bystudy_change.rtf"
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing multi-pair output: $path" }
-            $bytes = [System.IO.File]::ReadAllBytes($path)
-            if ($bytes.Length -lt 4 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
-              throw "CSV is missing its UTF-8 BOM: $path"
+            if ($path.EndsWith(".csv")) {
+              $bytes = [System.IO.File]::ReadAllBytes($path)
+              if ($bytes.Length -lt 4 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+                throw "CSV is missing its UTF-8 BOM: $path"
+              }
             }
           }
-          if (($expected | Where-Object { Test-Path $_ }).Count -ne 6) {
-            throw "The multi-pair run did not create all six expected CSV files."
+          if (($expected | Where-Object { Test-Path $_ }).Count -ne 12) {
+            throw "The multi-pair run did not create all 12 expected CSV/RTF files."
           }
 
-      - name: Reparse and validate generated Windows CSVs
+      - name: Reparse and validate generated Windows CSVs and RTFs
         shell: pwsh
         run: |
           @'
@@ -181,10 +195,13 @@ jobs:
           root <- file.path("logs", "RTF Changes")
           outputs <- list.files(root, pattern = "_change\\.csv$", recursive = TRUE,
                                 full.names = TRUE)
+          rtf_outputs <- list.files(root, pattern = "_change\\.rtf$", recursive = TRUE,
+                                    full.names = TRUE)
 
           stopifnot(all(file.exists(outputs)))
           stopifnot(length(outputs) == 10L)
-          stopifnot(length(list.files(root, pattern = "_change\\.rtf$", recursive = TRUE)) == 0L)
+          stopifnot(all(file.exists(rtf_outputs)))
+          stopifnot(length(rtf_outputs) == 10L)
           for (path in outputs) {
             parsed <- .read_change_csv(path)
             stopifnot(nrow(parsed) > 0L)
@@ -198,6 +215,19 @@ jobs:
                 stopifnot(any(parsed[[1]] == "Footnote changes in brackets"))
               }
             }
+          }
+          for (path in rtf_outputs) {
+            .validate_rtf_container(.read_rtf_text(path), path)
+            layout <- .rtf_cell_layout(path)
+            table_ids <- unique(layout$row_index[layout$is_table == TRUE])
+            stopifnot(length(table_ids) > 1L)
+            header <- layout$raw_value[
+              layout$is_table == TRUE & layout$row_index == table_ids[[1]]]
+            stopifnot(all(grepl("\\n(?:Change|NC)$", header, perl = TRUE)))
+            stopifnot(!any(grepl("^Column[[:space:]]*[0-9]+", header, perl = TRUE)))
+            paragraphs <- layout$raw_value[layout$is_table == FALSE]
+            stopifnot(any(grepl("_Change", paragraphs, fixed = TRUE)))
+            stopifnot(file.info(path)$size > 100L)
           }
           '@ | Set-Content -Encoding utf8 ".ci/validate_generated_csvs.R"
 

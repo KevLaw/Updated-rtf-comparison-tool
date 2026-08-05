@@ -49,7 +49,7 @@ macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
 change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_CSV_PROMPT <- paste0(
-  "Would you like a separate set of CSV tables generated showing only the ",
+  "Would you like separate CSV and RTF tables generated showing only the ",
   "differences or no differences identified line by line?")
 
 pick_file <- function(title) {
@@ -89,7 +89,7 @@ popup <- function(title, message, equivalent) {
 ask_change_prompt <- function() {
   if (have_tcltk) {
     ans <- tryCatch(as.character(tcltk::tkmessageBox(
-      title = "Generate CSV change tables?", icon = "question", type = "yesno",
+      title = "Generate CSV and RTF change tables?", icon = "question", type = "yesno",
       message = CHANGE_CSV_PROMPT)), error = function(e) "no")
     return(identical(ans, "yes"))
   }
@@ -206,7 +206,7 @@ audit_path <- tryCatch(
   error = function(e) { say("WARNING: could not update audit log: ", conditionMessage(e)); NA })
 if (!is.na(audit_path)) say("Audit log updated: ", audit_path)
 
-# --- optional CSV change tables (Windows and macOS workflows) ---------------
+# --- optional CSV and RTF change tables (Windows and macOS workflows) -------
 generate_changes <- FALSE
 change_generation_failed <- FALSE
 change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
@@ -218,17 +218,17 @@ if (change_preset %in% c("y", "yes", "true", "1")) {
 }
 if (generate_changes) {
   change_files <- tryCatch(
-    write_change_csv_pair(file1, file2, result, root),
-    error = function(e) { say("WARNING: could not generate CSV change tables: ",
+    write_change_output_pair(file1, file2, result, root),
+    error = function(e) { say("WARNING: could not generate CSV/RTF change tables: ",
                               conditionMessage(e)); NULL })
   if (is.null(change_files)) {
     change_generation_failed <- TRUE
   } else {
-    say("CSV change tables saved:")
+    say("CSV and RTF change tables saved:")
     for (p in change_files$output) say("  ", p)
     if (gui_mode) popup(
-      "CSV change tables saved",
-      paste0("The Set 1 and Set 2 CSV change tables were saved under:\n\n",
+      "CSV and RTF change tables saved",
+      paste0("The Set 1 and Set 2 CSV and RTF change tables were saved under:\n\n",
              file.path(root, "logs", "RTF Changes")), equivalent = TRUE)
   }
 }
