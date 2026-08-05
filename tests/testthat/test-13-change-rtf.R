@@ -10,6 +10,14 @@
   list(dir = d, files = files)
 }
 
+.add_hidden_destination <- function(source, destination, id = "internal-bookmark") {
+  text <- readLines(source, warn = FALSE)
+  text <- sub("Placebo\\cell", paste0("{\\*\\bkmkstart ", id, "}Placebo\\cell"),
+              text, fixed = TRUE)
+  writeLines(text, destination, useBytes = TRUE)
+  destination
+}
+
 test_that("the existing test suite can generate valid tabular RTF output", {
   g <- .new_change_fixture("generator_capability")
   expect_true(all(file.exists(g$files)))
@@ -181,6 +189,50 @@ test_that("RTF structural validation handles escaped braces and binary payloads"
   valid <- paste0("{\\rtf1\\ansi escaped \\{ brace \\} slash \\\\ ",
                   "\\bin4 ", rawToChar(as.raw(c(123L, 125L, 92L, 0L))), "\\par}")
   expect_silent(.validate_rtf_container(valid, "binary.rtf"))
+})
+
+test_that("hidden RTF destinations do not invalidate displayed-cell mapping", {
+  d <- file.path(tempdir(), paste0("hidden_destination_", as.integer(runif(1, 1, 1e9))))
+  dir.create(d, recursive = TRUE)
+  f1 <- .add_hidden_destination(fx("value_diff_A.rtf"), file.path(d, "set1.rtf"))
+  f2 <- .add_hidden_destination(fx("value_diff_B.rtf"), file.path(d, "set2.rtf"))
+
+  expect_silent(.rtf_parse_change_document(f1))
+  result <- compare_rtf(f1, f2, console = FALSE)
+  written <- write_change_rtf_pair(f1, f2, result, d)
+
+  expect_equal(nrow(written), 2L)
+  expect_true(all(written$ok))
+  expect_true(all(file.exists(written$output)))
+  for (path in written$output) {
+    # Hidden metadata remains byte-preserved, but it is not rendered as a
+    # table value and is not selected as the replacement insertion point.
+    expect_match(.read_rtf_text(path), "bkmkstart internal-bookmark", fixed = TRUE)
+    expect_false(any(grepl("internal-bookmark", parse_rtf(path)$raw_value, fixed = TRUE)))
+  }
+})
+
+test_that("a batch of hidden-destination tables generates every accepted pair", {
+  d <- file.path(tempdir(), paste0("hidden_batch_", as.integer(runif(1, 1, 1e9))))
+  d1 <- file.path(d, "set1"); d2 <- file.path(d, "set2")
+  dir.create(d1, recursive = TRUE); dir.create(d2, recursive = TRUE)
+  names1 <- c("exact_hidden.rtf", "s0ae0by0outcompe0sei.rtf")
+  names2 <- c("exact_hidden.rtf", "s0ae0by0outcompe0aeosi.rtf")
+  for (i in seq_along(names1)) {
+    .add_hidden_destination(fx("value_diff_A.rtf"), file.path(d1, names1[[i]]),
+                            paste0("set1-bookmark-", i))
+    .add_hidden_destination(fx("value_diff_B.rtf"), file.path(d2, names2[[i]]),
+                            paste0("set2-bookmark-", i))
+  }
+
+  batch <- compare_rtf_folder(d1, d2, console = FALSE, progress = FALSE)
+  expect_equal(length(batch$results), 2L)
+  expect_true(all(batch$summary$status == "DIFFERENCES"))
+  written <- write_batch_change_rtfs(batch, file.path(d, "tool"))
+  expect_equal(length(unique(written$pair)), 2L)
+  expect_equal(nrow(written), 4L)
+  expect_true(all(written$ok))
+  expect_true(all(file.exists(written$output)))
 })
 
 test_that("generated change RTFs render through the native macOS document converter", {

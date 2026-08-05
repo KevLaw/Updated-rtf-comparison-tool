@@ -121,6 +121,22 @@ jobs:
           Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/s0exp0sum.rtf"
           Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/s0exp0sum0bystudy.rtf"
 
+          # Reproduce the source pattern that previously caused all accepted
+          # pairs to fail displayed-cell mapping: hidden bookmark destinations
+          # are metadata and must not be treated as rendered cell text.
+          function Add-HiddenDestination([string]$Path, [string]$Id) {
+            $text = [System.IO.File]::ReadAllText($Path)
+            $hidden = "{\*\bkmkstart $Id}Placebo\cell"
+            $text = $text.Replace("Placebo\cell", $hidden)
+            [System.IO.File]::WriteAllText($Path, $text)
+          }
+          Add-HiddenDestination ".ci/multi-set1/exact_table.rtf" "set1-exact"
+          Add-HiddenDestination ".ci/multi-set2/exact_table.rtf" "set2-exact"
+          Add-HiddenDestination ".ci/multi-set1/s0ae0by0outcompe0sei.rtf" "set1-fuzzy"
+          Add-HiddenDestination ".ci/multi-set2/s0ae0by0outcompe0aeosi.rtf" "set2-fuzzy"
+          Add-HiddenDestination ".ci/multi-set1/s0exp0sum.rtf" "set1-zero-token"
+          Add-HiddenDestination ".ci/multi-set2/s0exp0sum0bystudy.rtf" "set2-zero-token"
+
           $set1 = (Resolve-Path ".ci/multi-set1").Path
           $set2 = (Resolve-Path ".ci/multi-set2").Path
           $process = Start-Process -FilePath (Get-Command Rscript).Source `
@@ -140,6 +156,10 @@ jobs:
           )
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing multi-pair output: $path" }
+            $raw = [System.IO.File]::ReadAllText($path)
+            if (-not $raw.Contains("\bkmkstart")) {
+              throw "Hidden bookmark destination was not preserved in: $path"
+            }
           }
           if (($expected | Where-Object { Test-Path $_ }).Count -ne 6) {
             throw "The multi-pair run did not create all six expected RTF files."
