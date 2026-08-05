@@ -60,7 +60,7 @@ macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
 change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_CSV_PROMPT <- paste0(
-  "Would you like a separate set of CSV tables generated showing only the ",
+  "Would you like separate CSV and RTF tables generated showing only the ",
   "differences or no differences identified line by line?")
 
 pick_folder <- function(title) {
@@ -101,7 +101,7 @@ popup <- function(title, message, equivalent) {
 ask_change_prompt <- function() {
   if (have_tcltk) {
     ans <- tryCatch(as.character(tcltk::tkmessageBox(
-      title = "Generate CSV change tables?", icon = "question", type = "yesno",
+      title = "Generate CSV and RTF change tables?", icon = "question", type = "yesno",
       message = CHANGE_CSV_PROMPT)), error = function(e) "no")
     return(identical(ans, "yes"))
   }
@@ -238,7 +238,7 @@ if (gui_mode && have_tcltk) {
   }
 }
 
-# --- optional per-source CSV change tables (Windows and macOS workflows) ----
+# --- optional per-source CSV and RTF tables (Windows and macOS workflows) ---
 generate_changes <- FALSE
 change_generation_failed <- FALSE
 change_preset <- tolower(trimws(Sys.getenv("RTF_GENERATE_CHANGES", "")))
@@ -250,24 +250,24 @@ if (change_preset %in% c("y", "yes", "true", "1")) {
 }
 if (generate_changes) {
   expected_pairs <- sum(batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES"))
-  say("\nGenerating change CSVs for all ", expected_pairs,
+  say("\nGenerating change CSVs and RTFs for all ", expected_pairs,
       " officially compared pair(s)...")
-  change_files <- write_batch_change_csvs(batch, root, progress = TRUE)
+  change_files <- write_batch_change_outputs(batch, root, progress = TRUE)
   successes <- change_files[change_files$ok, , drop = FALSE]
   failures <- change_files[!change_files$ok, , drop = FALSE]
   successful_pairs <- length(unique(successes$pair))
   failed_pairs <- length(unique(failures$pair))
   complete <- expected_pairs == successful_pairs && failed_pairs == 0L &&
-              nrow(successes) == expected_pairs * 2L &&
+              nrow(successes) == expected_pairs * 4L &&
               all(file.exists(successes$output))
   if (complete) {
     say("Completed ", successful_pairs, " of ", expected_pairs,
-        " compared pair(s) (", nrow(successes), " CSV files).")
-    say("CSV change tables saved under:")
+        " compared pair(s) (", nrow(successes), " CSV/RTF files).")
+    say("CSV and RTF change tables saved under:")
     say("  ", file.path(root, "logs", "RTF Changes"))
   } else {
     change_generation_failed <- TRUE
-    say("ERROR: change CSV generation was incomplete: ", successful_pairs,
+    say("ERROR: change CSV/RTF generation was incomplete: ", successful_pairs,
         " of ", expected_pairs, " compared pair(s) completed.")
   }
   if (nrow(failures) > 0L) {
@@ -275,9 +275,9 @@ if (generate_changes) {
       say("ERROR [", failures$pair[[i]], "]: ", failures$error[[i]])
   }
   if (gui_mode) popup(
-    if (complete) "CSV change tables saved" else "CSV change tables incomplete",
+    if (complete) "CSV and RTF change tables saved" else "CSV/RTF change tables incomplete",
     paste0(successful_pairs, " of ", expected_pairs, " compared pair(s) completed (",
-           nrow(successes), " CSV file(s)).\n\n",
+           nrow(successes), " CSV/RTF file(s)).\n\n",
            file.path(root, "logs", "RTF Changes")), equivalent = complete)
 }
 

@@ -37,11 +37,12 @@ What gets written here:
       file per batch run (a .txt full report and a .csv per-file summary).
 
   RTF Changes/
-      Optional Windows or macOS CSV change tables created when the user answers Yes to
-      the final prompt. Set 1 contains CSVs named from the first selected
-      file/folder; Set 2 contains CSVs named from the second. Both show the
+      Optional Windows or macOS CSV and RTF change tables created when the user answers Yes
+      to the final prompt. Set 1 contains files named from the first selected
+      file/folder; Set 2 contains files named from the second. Both show the
       same Set 2-minus-Set 1 results and aligned union of Column 1 rows. Each
-      output replaces the source .rtf extension with "_change.csv".
+      outputs replace the source .rtf extension with "_change.csv" and
+      "_change.rtf".
 
       A generated data cell contains only NC, a signed count/percentage-point
       delta such as (+5, -1%), a signed scalar delta such as +1.5, CHG, or an
@@ -51,10 +52,10 @@ What gets written here:
       spacing changes are ignored and Set 1 deletions appear as (missing).
 
       When one displayed RTF heading spans separate n and (%) physical cells,
-      those cells are consolidated into one semantic CSV column under the
+      those cells are consolidated into one semantic output column under the
       displayed heading. Continuation cells are never labeled Column 6, etc.
 
-      A file found in only one compared folder never produces a change CSV.
+      A file found in only one compared folder never produces a change CSV or RTF.
       Exact normalized names pair first. Like names and related filename
       families separated by "0" must also pass a title/Column 1 content gate.
       Every still-unmatched RTF is then content-checked against every eligible

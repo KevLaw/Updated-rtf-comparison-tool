@@ -56,7 +56,7 @@ macos_mode <- identical(Sys.info()[["sysname"]], "Darwin")
 change_prompt_mode <- windows_mode || macos_mode
 
 CHANGE_CSV_PROMPT <- paste0(
-  "Would you like a separate set of CSV tables generated showing only the ",
+  "Would you like separate CSV and RTF tables generated showing only the ",
   "differences or no differences identified line by line?")
 
 want_change_csvs <- function() {
@@ -164,13 +164,13 @@ repeat {
 
       if (want_change_csvs()) {
         change_files <- tryCatch(
-          write_change_csv_pair(f1, f2, res, root),
-          error = function(e) { say("WARNING: could not generate CSV change tables: ",
+          write_change_output_pair(f1, f2, res, root),
+          error = function(e) { say("WARNING: could not generate CSV/RTF change tables: ",
                                     conditionMessage(e)); NULL })
         if (is.null(change_files)) {
           last_status <- 2L
         } else {
-          say("CSV change tables saved:")
+          say("CSV and RTF change tables saved:")
           for (p in change_files$output) say("  ", p)
         }
       }

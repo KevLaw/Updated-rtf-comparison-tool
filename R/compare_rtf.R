@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.6.1"
+RTF_TOOL_VERSION <- "1.7.0"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -878,6 +878,12 @@ compare_rtf <- function(file1, file2,
   as.numeric(gsub(",", "", trimws(x), fixed = TRUE))
 }
 
+.parse_percent <- function(x) {
+  if (!grepl("^\\s*[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})*|[0-9]+)(?:\\.[0-9]+)?\\s*%\\s*$",
+             x, perl = TRUE)) return(NULL)
+  as.numeric(gsub(",", "", sub("%\\s*$", "", trimws(x)), fixed = TRUE))
+}
+
 .change_cell_value <- function(set1, set2) {
   if (identical(.rtf_norm(set1), .rtf_norm(set2))) return("NC")
   a <- .parse_count_percent(set1); b <- .parse_count_percent(set2)
@@ -886,6 +892,11 @@ compare_rtf <- function(file1, file2,
     if (dc == 0) return("NC")
     return(sprintf("(%s, %s%%)", .format_change_number(dc),
                    .format_change_number(b[2] - a[2])))
+  }
+  a <- .parse_percent(set1); b <- .parse_percent(set2)
+  if (!is.null(a) && !is.null(b)) {
+    d <- b - a
+    return(if (d == 0) "NC" else paste0(.format_change_number(d), "%"))
   }
   a <- .parse_scalar(set1); b <- .parse_scalar(set2)
   if (!is.null(a) && !is.null(b)) {
@@ -1497,9 +1508,19 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
     lines <- lines[nzchar(.rtf_norm(lines))]
     paste(unique(lines), collapse = "\n")
   }, character(1))
+  # Preserve the displayed source-column proportions for the semantic RTF
+  # renderer.  A grouped output column spans every physical source column in
+  # its group, so its width is measured from the first left boundary through
+  # the last right boundary.
+  physical_lefts <- c(0, head(as.numeric(canonical), -1L))
+  widths <- vapply(groups, function(g) {
+    as.numeric(canonical[max(g)]) - physical_lefts[min(g)]
+  }, numeric(1))
+  if (any(!is.finite(widths) | widths <= 0)) widths <- rep(1, length(groups))
   list(is_header = is_header, initial = initial, groups = groups,
        components = components, labels = enc2utf8(labels), maps = maps,
-       physical_ncol = physical_n, grouped = any(lengths(groups) > 1L))
+       widths = widths, physical_ncol = physical_n,
+       grouped = any(lengths(groups) > 1L))
 }
 
 .change_csv_physical_values <- function(values, map, n) {
@@ -1565,6 +1586,7 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
        titles = enc2utf8(title_values[nzchar(.rtf_norm(title_values))]),
        tail_paras = lapply(enc2utf8(foot_values), function(x) list(raw = "", value = x)),
        csv_groups = plan$groups, csv_grouped = plan$grouped,
+       csv_widths = plan$widths,
        physical_ncol = plan$physical_ncol)
 }
 
@@ -1573,6 +1595,12 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
     row$values <- .pad_change_values(row$values, ncol)
     row
   })
+  if (length(doc$csv_widths) < ncol) {
+    fallback <- if (length(doc$csv_widths)) median(doc$csv_widths) else 1
+    doc$csv_widths <- c(doc$csv_widths,
+                        rep(fallback, ncol - length(doc$csv_widths)))
+  }
+  doc$csv_widths <- doc$csv_widths[seq_len(ncol)]
   doc$ncol <- ncol
   doc
 }
@@ -1645,6 +1673,168 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   data.table::fwrite(frame, path, sep = ",", quote = "auto", na = "",
                      bom = TRUE, eol = "\r\n")
   invisible(path)
+}
+
+# Build a conservative, self-contained RTF from the semantic change model.
+# This intentionally does not copy source RTF control words: real-world
+# clinical outputs can contain stale pagination, merged-cell, and hidden Word
+# metadata that made the former template-rewrite output unreadable.  Displayed
+# titles, logical headers, column proportions, change values, row order, and
+# annotated footnotes are preserved.
+.semantic_change_rtf_cellx <- function(widths, total = 13680L) {
+  widths <- as.numeric(widths)
+  if (!length(widths) || any(!is.finite(widths) | widths <= 0))
+    widths <- rep(1, max(1L, length(widths)))
+  total <- max(as.integer(total), length(widths) * 240L)
+  raw <- cumsum(widths / sum(widths) * total)
+  rights <- pmax(seq_along(raw) * 240L, as.integer(round(raw)))
+  rights[length(rights)] <- total
+  rights
+}
+
+.semantic_change_rtf_row <- function(values, rights, header = FALSE) {
+  values <- .pad_change_values(values, length(rights))
+  border <- paste0("\\clbrdrt\\brdrs\\brdrw10",
+                   "\\clbrdrl\\brdrs\\brdrw10",
+                   "\\clbrdrb\\brdrs\\brdrw10",
+                   "\\clbrdrr\\brdrs\\brdrw10")
+  definitions <- paste0(border, "\\clvertalc\\cellx", rights, collapse = "")
+  cells <- vapply(seq_along(values), function(i) {
+    align <- if (header || i > 1L) "\\qc" else "\\ql"
+    bold <- if (header) "\\b" else ""
+    bold_off <- if (header) "\\b0" else ""
+    paste0("\\pard\\intbl", align, "\\f0\\fs18", bold, " ",
+           .rtf_escape_insert(values[[i]]), bold_off, "\\cell ")
+  }, character(1))
+  paste0("{\\trowd\\trgaph60\\trleft0", if (header) "\\trhdr" else "",
+         definitions, paste0(cells, collapse = ""), "\\row}\r\n")
+}
+
+.semantic_change_rtf_expected <- function(model, side) {
+  doc <- if (side == 1L) model$doc1 else model$doc2
+  headers <- doc$rows[vapply(doc$rows, `[[`, logical(1), "is_header")]
+  if (!length(headers)) stop("No semantic table header is available.", call. = FALSE)
+  header <- .pad_change_values(headers[[1]]$values, length(model$header_labels))
+  feet <- model$footnotes
+  if (model$footnote_changed)
+    feet <- c("Footnote changes in brackets", feet)
+  list(
+    titles = .add_change_to_table_number(doc$titles),
+    header = paste0(header, "\n", model$header_labels),
+    body = lapply(model$rows, `[[`, "values"),
+    footnotes = feet,
+    widths = doc$csv_widths
+  )
+}
+
+.render_semantic_change_rtf <- function(model, side) {
+  expected <- .semantic_change_rtf_expected(model, side)
+  rights <- .semantic_change_rtf_cellx(expected$widths)
+  title_text <- if (length(expected$titles)) vapply(expected$titles, function(x)
+    paste0("\\pard\\qc\\sa120\\f0\\fs20\\b ", .rtf_escape_insert(x),
+           "\\b0\\par\r\n"), character(1)) else character()
+  body <- if (length(expected$body)) vapply(expected$body,
+    .semantic_change_rtf_row, character(1), rights = rights, header = FALSE) else character()
+  feet <- if (length(expected$footnotes)) vapply(seq_along(expected$footnotes), function(i) {
+    value <- expected$footnotes[[i]]
+    paste0("\\pard\\ql\\sa40\\f0\\fs18", if (i == 1L && model$footnote_changed) "\\b" else "",
+           " ", .rtf_escape_insert(value),
+           if (i == 1L && model$footnote_changed) "\\b0" else "", "\\par\r\n")
+  }, character(1)) else character()
+  paste0(
+    "{\\rtf1\\ansi\\ansicpg1252\\deff0",
+    "{\\fonttbl{\\f0\\fnil\\fcharset0 Arial;}}",
+    "\\viewkind4\\uc1\\paperw15840\\paperh12240\\landscape",
+    "\\margl1080\\margr1080\\margt720\\margb720\r\n",
+    paste0(title_text, collapse = ""),
+    .semantic_change_rtf_row(expected$header, rights, header = TRUE),
+    paste0(body, collapse = ""),
+    if (length(feet)) "\\pard\\sa120 \\par\r\n" else "",
+    paste0(feet, collapse = ""),
+    "}"
+  )
+}
+
+.validate_semantic_change_rtf_output <- function(path, model, side) {
+  .validate_rtf_container(.read_rtf_text(path), path)
+  expected <- .semantic_change_rtf_expected(model, side)
+  layout <- .rtf_cell_layout(path)
+  ids <- unique(layout$row_index[layout$is_table == TRUE])
+  actual <- lapply(ids, function(id)
+    enc2utf8(layout$raw_value[layout$is_table == TRUE & layout$row_index == id]))
+  expected_rows <- c(list(enc2utf8(expected$header)),
+                     lapply(expected$body, enc2utf8))
+  if (length(actual) != length(expected_rows) ||
+      !all(vapply(seq_along(expected_rows), function(i)
+        identical(actual[[i]], expected_rows[[i]]), logical(1))))
+    stop(sprintf("Generated semantic change RTF failed exact table validation: '%s'.", path),
+         call. = FALSE)
+
+  paragraphs <- enc2utf8(layout$raw_value[layout$is_table == FALSE])
+  wanted <- enc2utf8(c(expected$titles, expected$footnotes))
+  if (length(wanted)) {
+    positions <- match(wanted, paragraphs)
+    if (anyNA(positions) || is.unsorted(positions, strictly = TRUE))
+      stop(sprintf("Generated semantic change RTF failed title/footnote validation: '%s'.",
+                   path), call. = FALSE)
+  }
+  source_titles <- c(model$doc1$titles, model$doc2$titles)
+  source_has_number <- any(grepl(
+    "(?i)\\bTable[[:space:]]+[0-9]+(?:\\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z]+)*",
+    source_titles, perl = TRUE))
+  if (source_has_number && !any(grepl("_Change", paragraphs, fixed = TRUE)))
+    stop("Generated semantic change RTF is missing the _Change table tag.", call. = FALSE)
+  invisible(TRUE)
+}
+
+.write_semantic_change_rtf_pair_from_model <- function(model, file1, file2, tool_root,
+                                                       relative1, relative2) {
+  base <- file.path(tool_root, "logs", "RTF Changes")
+  out <- c(file.path(base, "Set 1", .change_relative_path(relative1)),
+           file.path(base, "Set 2", .change_relative_path(relative2)))
+  for (destination in unique(dirname(out)))
+    dir.create(destination, recursive = TRUE, showWarnings = FALSE)
+  tmps <- backups <- rep("", 2L)
+  on.exit(unlink(tmps[nzchar(tmps) & file.exists(tmps)]), add = TRUE)
+  for (i in 1:2) {
+    tmps[[i]] <- tempfile(pattern = paste0(".", basename(out[[i]]), "."),
+                          tmpdir = dirname(out[[i]]), fileext = ".tmp")
+    .write_rtf_text(.render_semantic_change_rtf(model, i), tmps[[i]])
+    .validate_semantic_change_rtf_output(tmps[[i]], model, i)
+  }
+  for (i in 1:2) if (file.exists(out[[i]])) {
+    backups[[i]] <- tempfile(pattern = paste0(".", basename(out[[i]]), "."),
+                             tmpdir = dirname(out[[i]]), fileext = ".bak")
+    if (!file.rename(out[[i]], backups[[i]])) {
+      for (j in which(nzchar(backups) & file.exists(backups)))
+        file.rename(backups[[j]], out[[j]])
+      stop(sprintf("Could not preserve existing semantic RTF '%s'.", out[[i]]), call. = FALSE)
+    }
+  }
+  installed <- logical(2L)
+  for (i in 1:2) {
+    if (!file.rename(tmps[[i]], out[[i]])) {
+      unlink(out[installed & file.exists(out)])
+      for (j in 1:2) if (nzchar(backups[[j]]) && file.exists(backups[[j]]))
+        file.rename(backups[[j]], out[[j]])
+      stop("Could not install both validated semantic RTF outputs; rollback attempted.",
+           call. = FALSE)
+    }
+    installed[[i]] <- TRUE
+  }
+  unlink(backups[nzchar(backups) & file.exists(backups)])
+  data.frame(set = c("Set 1", "Set 2"), source = c(file1, file2),
+             output = normalizePath(out, mustWork = FALSE), ok = TRUE,
+             error = "", stringsAsFactors = FALSE)
+}
+
+#' Write safe, grouped-column Set 1 and Set 2 change RTFs for one pair.
+write_semantic_change_rtf_pair <- function(file1, file2, result, tool_root,
+                                           relative1 = basename(file1),
+                                           relative2 = basename(file2)) {
+  model <- .build_change_csv_model(file1, file2)
+  .write_semantic_change_rtf_pair_from_model(model, file1, file2, tool_root,
+                                              relative1, relative2)
 }
 
 #' Write validated Set 1 and Set 2 change CSVs for one compared RTF pair.
@@ -2244,6 +2434,55 @@ write_batch_change_csvs <- function(batch, tool_root, progress = FALSE) {
     pair$pair <- nm
     rows[[pair_index]] <- pair[, c("pair", "set", "source", "output", "ok", "error"),
                                drop = FALSE]
+  }
+  do.call(rbind, rows)
+}
+
+#' Write both reliable CSV and safe regenerated RTF change tables for a pair.
+write_change_output_pair <- function(file1, file2, result, tool_root,
+                                     relative1 = basename(file1),
+                                     relative2 = basename(file2)) {
+  csv <- write_change_csv_pair(file1, file2, result, tool_root,
+                               relative1 = relative1, relative2 = relative2)
+  csv$format <- "CSV"
+  rtf <- write_semantic_change_rtf_pair(file1, file2, result, tool_root,
+                                        relative1 = relative1, relative2 = relative2)
+  rtf$format <- "RTF"
+  rbind(csv[, c("set", "format", "source", "output", "ok", "error")],
+        rtf[, c("set", "format", "source", "output", "ok", "error")])
+}
+
+#' Write CSV and semantic RTF outputs for every officially compared batch pair.
+write_batch_change_outputs <- function(batch, tool_root, progress = FALSE) {
+  eligible <- batch$summary$file[
+    batch$summary$status %in% c("EQUIVALENT", "DIFFERENCES")
+  ]
+  if (!length(eligible))
+    return(data.frame(pair = character(), set = character(), format = character(),
+                      source = character(), output = character(), ok = logical(),
+                      error = character(), stringsAsFactors = FALSE))
+  rows <- vector("list", length(eligible))
+  for (pair_index in seq_along(eligible)) {
+    nm <- eligible[[pair_index]]
+    if (isTRUE(progress))
+      cat(sprintf("  Generating CSV and RTF change tables %d of %d: %s\n",
+                  pair_index, length(eligible), nm))
+    res <- batch$results[[nm]]
+    pair <- if (is.null(res)) {
+      data.frame(set = "Pair", format = "CSV/RTF", source = nm, output = "",
+                 ok = FALSE,
+                 error = "Internal batch error: an officially compared pair has no stored result.",
+                 stringsAsFactors = FALSE)
+    } else tryCatch(
+      write_change_output_pair(res$file1, res$file2, res, tool_root,
+                               relative1 = res$file1_name, relative2 = res$file2_name),
+      error = function(e) data.frame(
+        set = "Pair", format = "CSV/RTF", source = nm, output = "", ok = FALSE,
+        error = conditionMessage(e), stringsAsFactors = FALSE)
+    )
+    pair$pair <- nm
+    rows[[pair_index]] <- pair[, c("pair", "set", "format", "source", "output",
+                                   "ok", "error"), drop = FALSE]
   }
   do.call(rbind, rows)
 }

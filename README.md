@@ -80,13 +80,14 @@ compare another pair. Works with any two RTF files on the machine.
 
 On Windows and macOS, after the comparison and normal report choices are complete, the tool also asks:
 
-> Would you like a separate set of CSV tables generated showing only the differences or no
+> Would you like separate CSV and RTF tables generated showing only the differences or no
 > differences identified line by line?
 
-Choose **Yes** to create one validated CSV for each source RTF. The first file selected is
-**Set 1**, the second is **Set 2**, and every calculation is **Set 2 minus Set 1**. CSV output
-uses only the rendered text extracted by the comparison engine; it never rewrites raw RTF
-markup. This makes the output independent of Word/SAS formatting metadata and pagination.
+Choose **Yes** to create one validated CSV and one validated RTF for each source RTF. The
+first file selected is **Set 1**, the second is **Set 2**, and every calculation is **Set 2
+minus Set 1**. Both formats use only rendered text extracted by the comparison engine. The
+new RTF is regenerated from the semantic table instead of rewriting raw source markup, which
+makes it independent of stale Word/SAS formatting metadata and pagination.
 
 The table number gains `_Change`. Each original column header is preserved and gains either
 `Change` or `NC` on a new line: the label is `NC` only when every body cell in that column is
@@ -104,16 +105,16 @@ For example, `45 (5%)` in Set 1 and `50 (4%)` in Set 2 becomes `(+5, -1%)`. If t
 equal, the result is `NC` even when the displayed percentages differ.
 
 Multi-level RTF headers are preserved semantically. When one treatment heading spans separate
-`n` and `(%)` physical cells, those cells are consolidated into one CSV column under that
+`n` and `(%)` physical cells, those cells are consolidated into one output column under that
 treatment heading before changes are calculated. For example, separate `238` and `(90.8)`
 cells are treated as `238 (90.8%)`. Continuation cells therefore do not become numbered
-`Column 6` / `Column 7` placeholders in the CSV.
+`Column 6` / `Column 7` placeholders in either output.
 
 Rows are aligned by their displayed Column 1 description rather than absolute row number.
 Repeated descriptions are paired in occurrence order within their section. A row found in
 only one set is inserted into the same union of rows in both outputs, and its Column 1 label
 gains `(ONLY IN SET 1)` or `(ONLY IN SET 2)`. The files keep the source RTF name with
-`_change.csv` replacing `.rtf` and are saved under:
+`_change.csv` and `_change.rtf` replacing `.rtf` and are saved under:
 
 ```
 logs/RTF Changes/Set 1/
@@ -123,7 +124,7 @@ logs/RTF Changes/Set 2/
 The separate Set folders prevent same-named table pairs from overwriting one another.
 For a folder run, the tool prints progress for every officially accepted pair and finishes
 with an expected-versus-completed pair count. If even one accepted pair cannot produce both
-validated CSVs, the run is marked incomplete and exits with error code `2`; partial output is
+validated CSVs and RTFs, the run is marked incomplete and exits with error code `2`; partial output is
 never reported as a successful completed set.
 
 Each CSV is written with a UTF-8 byte-order mark for Windows Excel compatibility, then read
@@ -132,13 +133,13 @@ pair. Commas, quotes, embedded newlines, leading spaces, and Unicode text are pr
 Tables with different semantic source column counts are padded to a common width instead of
 failing.
 
-Footnotes use Set 2 wording in both generated CSVs. Cosmetic differences in whitespace,
+Footnotes use Set 2 wording in all generated outputs. Cosmetic differences in whitespace,
 tabs, or spacing around punctuation and hyphens are ignored. For a material difference, only
 the changed Set 2 character span is enclosed in parentheses; a Set 1 deletion is shown as
 `(missing)`. The exact heading `Footnote changes in brackets` appears above the footnotes only
 when there is a material footnote change.
 
-CSV change-table generation is available from both the **Windows and macOS workflows**.
+CSV and RTF change-table generation is available from both the **Windows and macOS workflows**.
 
 > **Prefer clicking files in a dialog?** Use `2b-Compare-Using-File-Picker.bat` /
 > `2b-Compare-Using-File-Picker.command` instead — same result, file-picker dialogs rather
@@ -174,11 +175,11 @@ one folder (or that can't be read) are flagged rather than silently skipped. The
 is **archived automatically** inside the tool's `logs/reports/` folder (a `.txt` and a `.csv`),
 and you're also offered a **Save dialog** to keep your own copy wherever you like.
 
-On Windows and macOS, the same final CSV-change-table prompt is offered after a folder run. If selected,
-the tool generates Set 1 and Set 2 CSV change tables for every successfully paired file, including
+On Windows and macOS, the same final change-table prompt is offered after a folder run. If selected,
+the tool generates Set 1 and Set 2 CSV and RTF change tables for every successfully paired file, including
 equivalent pairs. The same calculation, semantic row-alignment, header, and footnote rules
 described above apply. Unmatched or unreadable files remain identified in the batch report but
-do not produce a change CSV.
+do not produce a change CSV or RTF.
 
 **Three-pass pairing rule:** exact normalized filenames always take priority. Among remaining
 files, the second pass recognizes either (a) long names within 3 single-character edits and at
@@ -201,9 +202,9 @@ files were checked without finding a safe match. Exact filename pairs are still 
 regardless of content because finding substantial content changes is the tool's core purpose.
 For example, `s0ae0by0outcompe0sei.rtf` safely pairs with
 `s0ae0by0outcompe0aeosi.rtf`. Ambiguous, weaker, or content-rejected candidates stay unmatched,
-and the report records why no safe match was found. A change CSV is generated only for a
+and the report records why no safe match was found. Change outputs are generated only for a
 successfully compared exact, filename-family, or content-only pair; an unmatched file never
-produces a change CSV.
+produces a change CSV and RTF.
 
 ---
 
@@ -395,9 +396,9 @@ all five difference types, numeric tolerance, the report/CSV/exit codes, edge ca
 check, the two key integration expectations (base↔reformatted EQUIVALENT;
 base↔changed = 7 differences), real-world clinical files (`tests/real_world/`), the
 **batch folder comparison** (every file listed, including matches), the **audit log**
-(every run recorded, including no-difference runs), and the optional Windows/macOS CSV change
-tables, including a 100-pair general stress run, a 40-pair grouped-header stress run, and a
-500-row output-completeness test. Pull requests are additionally checked on `windows-latest`
+(every run recorded, including no-difference runs), and the optional Windows/macOS CSV/RTF change
+tables, including 100-pair CSV, 40-pair grouped-header, 30-pair dual-format, and 600-row RTF
+output-completeness tests. Pull requests are additionally checked on `windows-latest`
 before merge.
 
 ---
