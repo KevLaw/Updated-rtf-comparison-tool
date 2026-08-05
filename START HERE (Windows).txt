@@ -82,6 +82,11 @@ WHAT YOU NEED
   "Change" or "NC" on a new line. A header says "NC" only when every body
   cell in that column is NC; otherwise it says "Change".
 
+  If one RTF treatment heading spans separate n and (%) cells, the tool joins
+  those cells into one CSV column under the treatment heading before it
+  calculates changes. It will not create numbered continuation headings such
+  as Column6 or Column7 for those cells.
+
   Generated data cells contain only:
       NC                         source values are equal
       (+5, -1%)                  count and displayed-percentage change

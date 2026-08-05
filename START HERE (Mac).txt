@@ -90,6 +90,11 @@ WHAT YOU NEED
         logs/RTF Changes/Set 1/
         logs/RTF Changes/Set 2/
 
+  If one RTF treatment heading spans separate n and (%) cells, the tool joins
+  those cells into one CSV column under the treatment heading before it
+  calculates changes. It will not create numbered continuation headings such
+  as Column6 or Column7 for those cells.
+
   For a folder comparison, progress is printed for every accepted pair. The
   final message states how many pairs completed. If even one accepted pair
   fails to create both validated CSVs, the run is marked INCOMPLETE instead

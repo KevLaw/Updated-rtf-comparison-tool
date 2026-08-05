@@ -103,6 +103,12 @@ subtracts the percentages printed in the source cells; it does not calculate a r
 For example, `45 (5%)` in Set 1 and `50 (4%)` in Set 2 becomes `(+5, -1%)`. If the counts are
 equal, the result is `NC` even when the displayed percentages differ.
 
+Multi-level RTF headers are preserved semantically. When one treatment heading spans separate
+`n` and `(%)` physical cells, those cells are consolidated into one CSV column under that
+treatment heading before changes are calculated. For example, separate `238` and `(90.8)`
+cells are treated as `238 (90.8%)`. Continuation cells therefore do not become numbered
+`Column 6` / `Column 7` placeholders in the CSV.
+
 Rows are aligned by their displayed Column 1 description rather than absolute row number.
 Repeated descriptions are paired in occurrence order within their section. A row found in
 only one set is inserted into the same union of rows in both outputs, and its Column 1 label
@@ -123,7 +129,8 @@ never reported as a successful completed set.
 Each CSV is written with a UTF-8 byte-order mark for Windows Excel compatibility, then read
 back and compared exactly before installation. Set 1 and Set 2 are installed as one atomic
 pair. Commas, quotes, embedded newlines, leading spaces, and Unicode text are preserved.
-Tables with different source column counts are padded to a common width instead of failing.
+Tables with different semantic source column counts are padded to a common width instead of
+failing.
 
 Footnotes use Set 2 wording in both generated CSVs. Cosmetic differences in whitespace,
 tabs, or spacing around punctuation and hyphens are ignored. For a material difference, only
@@ -371,8 +378,8 @@ After generating, compare `base` against `reformatted` (expect EQUIVALENT) and a
 A full automated suite verifies every part of the tool against small hand-built fixtures,
 the large clinical example files, **and** real-world clinical outputs (see
 `tests/real_world/`). It also validates change calculations independently, semantic row
-alignment, column-level `Change`/`NC` labels, footnote annotations, generated-RTF reparsing,
-and the Windows/macOS runners.
+alignment, grouped multi-level headers, column-level `Change`/`NC` labels, footnote
+annotations, generated-CSV reparsing, and the Windows/macOS runners.
 
 **Easy way:** double-click **`windows\3-Run-Tests.bat`** / **`macos/3-Run-Tests.command`**.
 
@@ -389,8 +396,9 @@ check, the two key integration expectations (base↔reformatted EQUIVALENT;
 base↔changed = 7 differences), real-world clinical files (`tests/real_world/`), the
 **batch folder comparison** (every file listed, including matches), the **audit log**
 (every run recorded, including no-difference runs), and the optional Windows/macOS CSV change
-tables, including a 100-pair synthetic stress run. Pull requests are additionally checked on
-`windows-latest` before merge.
+tables, including a 100-pair general stress run, a 40-pair grouped-header stress run, and a
+500-row output-completeness test. Pull requests are additionally checked on `windows-latest`
+before merge.
 
 ---
 
