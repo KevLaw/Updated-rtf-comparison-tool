@@ -71,14 +71,12 @@ WHAT YOU NEED
 
   At the end it also asks:
 
-        "Would you like a separate set of RTF tables generated showing only
+        "Would you like a separate set of CSV tables generated showing only
          the differences or no differences identified line by line?"
 
-  Answer Yes to create a true change table in the style of each source RTF.
-  The calculation direction is always Set 2 minus Set 1. Both generated RTFs
-  contain the same aligned rows and results, while each keeps its source page
-  setup, headings, table layout, spacing, and footnote styling as closely as
-  possible.
+  Answer Yes to create a validated CSV for each source RTF. The calculation
+  direction is always Set 2 minus Set 1. Both generated CSVs contain the same
+  aligned rows and results and are independent of raw RTF formatting metadata.
 
   The table number gets "_Change". Each original column header gets either
   "Change" or "NC" on a new line. A header says "NC" only when every body
@@ -108,14 +106,14 @@ WHAT YOU NEED
   shown as "(missing)". The heading "Footnote changes in brackets" appears
   only when there is a material footnote change.
 
-  Files keep their original name with "_change" before .rtf and are saved in:
+  Files replace the original .rtf extension with "_change.csv" and are saved in:
 
         logs\RTF Changes\Set 1\
         logs\RTF Changes\Set 2\
 
   For a folder comparison, progress is printed for every accepted pair. The
   final message states how many pairs completed. If even one accepted pair
-  fails to create both validated RTFs, the run is marked INCOMPLETE instead
+  fails to create both validated CSVs, the run is marked INCOMPLETE instead
   of presenting a partial folder as successful.
 
   It then asks "Compare another pair? (y/N)" so you can keep going.
@@ -144,8 +142,8 @@ WHAT YOU NEED
   "logs\reports" folder, and you are also offered a Save dialog to keep your
   own copy wherever you like.
 
-  At the end, the same RTF change-table question appears. Answer Yes to
-  create Set 1 and Set 2 change tables for every successfully paired file,
+  At the end, the same CSV change-table question appears. Answer Yes to
+  create Set 1 and Set 2 CSV change tables for every successfully paired file,
   including files with no differences. The same calculation, row alignment,
   header, and footnote rules described in Step 2 apply. Exact names take
   priority. A like-name match must be unique, within 3 character edits, at
@@ -158,7 +156,7 @@ WHAT YOU NEED
   still-unmatched Set 2 RTF, even when the names are unrelated. Only a strong,
   unique title/Column 1 match is accepted. The report says when this complete
   search found no safe match. Ambiguous or rejected files remain unmatched
-  and do not produce a change RTF.
+  and do not produce a change CSV.
 
   Example of a safely paired like-name set:
     Set 1: s0ae0by0outcompe0sei.rtf

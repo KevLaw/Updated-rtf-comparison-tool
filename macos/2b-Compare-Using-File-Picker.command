@@ -3,7 +3,7 @@
 #  Compare two RTF files using FILE-PICKER dialogs (macOS)
 #  Alternative to 2-Compare-RTF-Files.command for those who prefer clicking
 #  files instead of pasting paths. Pick Set 1 first and Set 2 second; the final
-#  prompt can generate paired RTF change tables.
+#  prompt can generate paired CSV change tables.
 # ============================================================================
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
