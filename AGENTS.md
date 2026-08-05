@@ -22,7 +22,7 @@ cell text, normalise it, and compare the normalised content positionally.** The
 
 ## 2. Golden invariants — do not break these
 
-Run `Rscript R/run_tests.R` after any change. It must report **382 passed, 0 failed**. In
+Run `Rscript R/run_tests.R` after any change. It must report **402 passed, 0 failed**. In
 particular:
 
 - **base vs reformatted → EQUIVALENT** (0 differences) — content is compared, not markup.
@@ -112,7 +112,7 @@ double-click `windows\1-Install-Packages.bat` / `macos/1-Install-Packages.comman
 Rscript R/run_compare_paths.R
 # compare directly (prints result; writes only if you pass --report/--csv):
 Rscript R/compare_rtf.R --file1 a.rtf --file2 b.rtf [--report out.txt] [--csv diffs.csv]
-# run the whole test suite (expect "382 passed"):
+# run the whole test suite (expect "402 passed"):
 Rscript R/run_tests.R
 # generate synthetic test files (raise --rows for a large performance file):
 Rscript R/generate_test_data.R --out examples/generated [--rows N] [--seed S]
@@ -172,7 +172,7 @@ Point-and-click: `windows\2-Compare-RTF-Files.bat` (paste paths), `2b-…` (file
 
 ## 8. Definition of done for a change
 
-1. `Rscript R/run_tests.R` → **382 passed, 0 failed** (or more, if you added tests).
+1. `Rscript R/run_tests.R` → **402 passed, 0 failed** (or more, if you added tests).
 2. New behaviour has a test; new options are documented in `README.md` and (if user-facing)
    the `START HERE` files.
 3. No stray output files committed (`RTF_comparison_*`, `.DS_Store`, `examples/generated/`

@@ -121,21 +121,25 @@ jobs:
           Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/s0exp0sum.rtf"
           Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/s0exp0sum0bystudy.rtf"
 
-          # Reproduce the source pattern that previously caused all accepted
-          # pairs to fail displayed-cell mapping: hidden bookmark destinations
-          # are metadata and must not be treated as rendered cell text.
-          function Add-HiddenDestination([string]$Path, [string]$Id) {
+          # Reproduce screenshot4's two source patterns: stale cell controls
+          # and an early row terminator inside hidden old-row-properties
+          # metadata. Neither may be treated as rendered table structure.
+          function Add-HiddenTableControls([string]$Path, [string]$Mode) {
             $text = [System.IO.File]::ReadAllText($Path)
-            $hidden = "{\*\bkmkstart $Id}Placebo\cell"
-            $text = $text.Replace("Placebo\cell", $hidden)
+            if ($Mode -eq "extra-cells") {
+              $replacement = "{\*\oldcprops \cell\cell\cell}Placebo\cell"
+            } else {
+              $replacement = "Placebo\cell{\*\oldcprops \row\trowd\par\clmgf}"
+            }
+            $text = $text.Replace("Placebo\cell", $replacement)
             [System.IO.File]::WriteAllText($Path, $text)
           }
-          Add-HiddenDestination ".ci/multi-set1/exact_table.rtf" "set1-exact"
-          Add-HiddenDestination ".ci/multi-set2/exact_table.rtf" "set2-exact"
-          Add-HiddenDestination ".ci/multi-set1/s0ae0by0outcompe0sei.rtf" "set1-fuzzy"
-          Add-HiddenDestination ".ci/multi-set2/s0ae0by0outcompe0aeosi.rtf" "set2-fuzzy"
-          Add-HiddenDestination ".ci/multi-set1/s0exp0sum.rtf" "set1-zero-token"
-          Add-HiddenDestination ".ci/multi-set2/s0exp0sum0bystudy.rtf" "set2-zero-token"
+          Add-HiddenTableControls ".ci/multi-set1/exact_table.rtf" "extra-cells"
+          Add-HiddenTableControls ".ci/multi-set2/exact_table.rtf" "extra-cells"
+          Add-HiddenTableControls ".ci/multi-set1/s0ae0by0outcompe0sei.rtf" "early-row"
+          Add-HiddenTableControls ".ci/multi-set2/s0ae0by0outcompe0aeosi.rtf" "early-row"
+          Add-HiddenTableControls ".ci/multi-set1/s0exp0sum.rtf" "extra-cells"
+          Add-HiddenTableControls ".ci/multi-set2/s0exp0sum0bystudy.rtf" "extra-cells"
 
           $set1 = (Resolve-Path ".ci/multi-set1").Path
           $set2 = (Resolve-Path ".ci/multi-set2").Path
@@ -157,8 +161,8 @@ jobs:
           foreach ($path in $expected) {
             if (-not (Test-Path $path)) { throw "Missing multi-pair output: $path" }
             $raw = [System.IO.File]::ReadAllText($path)
-            if (-not $raw.Contains("\bkmkstart")) {
-              throw "Hidden bookmark destination was not preserved in: $path"
+            if (-not $raw.Contains("\oldcprops")) {
+              throw "Hidden row-properties destination was not preserved in: $path"
             }
           }
           if (($expected | Where-Object { Test-Path $_ }).Count -ne 6) {

@@ -121,9 +121,10 @@ with an expected-versus-completed pair count. If even one accepted pair cannot p
 validated RTFs, the run is marked incomplete and exits with error code `2`; partial output is
 never reported as a successful completed set.
 
-Hidden RTF destinations such as bookmarks and document metadata are retained in the source
-formatting but excluded from displayed-cell matching. They therefore cannot be mistaken for
-visible table text or prevent otherwise supported change tables from being generated.
+Hidden RTF destinations such as bookmarks, stale row/cell properties, and document metadata
+are retained in the source formatting but excluded from displayed-cell and table-boundary
+matching. Hidden `\cell`, `\row`, and related controls therefore cannot split or corrupt a
+generated change table.
 
 Footnotes use Set 2 wording in both generated RTFs. Cosmetic differences in whitespace,
 tabs, or spacing around punctuation and hyphens are ignored. For a material difference, only
