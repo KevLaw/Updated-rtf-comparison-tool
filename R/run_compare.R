@@ -32,7 +32,14 @@ source(engine)
 root <- rtf_tool_root(script_dir)
 
 # --- small cross-platform helpers -------------------------------------------
-have_tcltk <- requireNamespace("tcltk", quietly = TRUE) &&
+# Resolve preset paths before Tcl/Tk is touched. Scripted validation supplies
+# both paths and must remain headless; initializing Tk in that mode can abort R
+# on macOS even though no picker or popup is needed.
+.cli_args <- commandArgs(trailingOnly = TRUE)
+preset1 <- if (length(.cli_args) >= 1L) .cli_args[[1]] else Sys.getenv("RTF_FILE1", "")
+preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_FILE2", "")
+gui_requested <- !nzchar(preset1)
+have_tcltk <- gui_requested && requireNamespace("tcltk", quietly = TRUE) &&
   isTRUE(tryCatch({ tcltk::tclvalue(tcltk::tclVar("ok")); TRUE },
                   error = function(e) FALSE))
 
@@ -101,9 +108,6 @@ say("============================================================")
 
 # Paths may be supplied up front (two command-line arguments, or the env vars
 # RTF_FILE1 / RTF_FILE2) to skip the dialogs -- handy for scripting and tests.
-.cli_args <- commandArgs(trailingOnly = TRUE)
-preset1 <- if (length(.cli_args) >= 1L) .cli_args[[1]] else Sys.getenv("RTF_FILE1", "")
-preset2 <- if (length(.cli_args) >= 2L) .cli_args[[2]] else Sys.getenv("RTF_FILE2", "")
 
 if (nzchar(preset1)) {
   file1 <- preset1

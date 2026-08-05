@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.5.2"
+RTF_TOOL_VERSION <- "1.5.3"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -551,6 +551,52 @@ compare_rtf <- function(file1, file2,
   }
 })
 
+# Mark tokens that belong to a non-rendered RTF destination.  SAS and Word can
+# retain old row/cell properties in ignorable groups such as
+# {\*\oldcprops ...}.  Those groups may legally contain \cell, \row, \par, or
+# even table-property controls.  They are metadata, not rendered structure,
+# and therefore must be ignored everywhere that maps displayed content back
+# to raw RTF spans.
+.rtf_hidden_token_mask <- function(tok, text) {
+  hidden <- logical(nrow(tok))
+  destinations <- .rtf_destination_names()
+  stack <- list(list(skip = FALSE, leading = TRUE))
+  for (i in seq_len(nrow(tok))) {
+    if (tok$type[i] == "group_start") {
+      parent <- stack[[length(stack)]]
+      hidden[i] <- parent$skip
+      stack[[length(stack) + 1L]] <- list(skip = parent$skip, leading = TRUE)
+      next
+    }
+    if (tok$type[i] == "group_end") {
+      hidden[i] <- stack[[length(stack)]]$skip
+      if (length(stack) > 1L) stack <- stack[-length(stack)]
+      next
+    }
+    state_index <- length(stack); state <- stack[[state_index]]
+    if (tok$type[i] == "control" && state$leading) {
+      if (tok$control[i] == "*" || tok$control[i] %in% destinations)
+        state$skip <- TRUE
+      state$leading <- FALSE
+      stack[[state_index]] <- state
+    } else if (tok$type[i] == "text") {
+      piece <- substr(text, tok$start[i], tok$end[i])
+      piece <- gsub("[\r\n]", "", piece)
+      if (nzchar(piece)) {
+        state$leading <- FALSE
+        stack[[state_index]] <- state
+      }
+    }
+    hidden[i] <- state$skip
+  }
+  hidden
+}
+
+.rtf_visible_control_indices <- function(tok, controls, text) {
+  hidden <- .rtf_hidden_token_mask(tok, text)
+  which(tok$type == "control" & tok$control %in% controls & !hidden)
+}
+
 .rtf_decode_span <- function(text) {
   tok <- .rtf_tokens(text)
   out <- character(); visible <- logical(nrow(tok)); fallback <- 0L
@@ -689,7 +735,7 @@ compare_rtf <- function(file1, file2,
 
 .rtf_row_parts <- function(raw, expected = NULL) {
   tok <- .rtf_tokens(raw)
-  ci <- which(tok$type == "control" & tok$control == "cell")
+  ci <- .rtf_visible_control_indices(tok, "cell", raw)
   if (!is.null(expected) && length(ci) != expected)
     stop(sprintf("Unsafe RTF row mapping: expected %d cells, found %d.", expected, length(ci)),
          call. = FALSE)
@@ -718,12 +764,13 @@ compare_rtf <- function(file1, file2,
   .validate_rtf_container(text, path)
   layout <- .rtf_cell_layout(path); tok <- .rtf_tokens(text)
   unsupported <- c("nesttableprops", "nestrow", "clmgf", "clmrg", "clvmgf", "clvmrg")
-  bad <- unique(tok$control[tok$type == "control" & tok$control %in% unsupported])
+  bad_at <- .rtf_visible_control_indices(tok, unsupported, text)
+  bad <- unique(tok$control[bad_at])
   if (length(bad))
     stop(sprintf("Merged or nested RTF tables are not supported for change output in '%s' (%s).",
                  path, paste(bad, collapse = ", ")), call. = FALSE)
-  starts <- which(tok$type == "control" & tok$control == "trowd")
-  ends <- which(tok$type == "control" & tok$control == "row")
+  starts <- .rtf_visible_control_indices(tok, "trowd", text)
+  ends <- .rtf_visible_control_indices(tok, "row", text)
   if (!length(starts) || !length(ends))
     stop(sprintf("No safely mappable RTF table found in '%s'.", path), call. = FALSE)
   pairs <- list(); used <- rep(FALSE, length(ends)); k <- 0L
@@ -766,7 +813,7 @@ compare_rtf <- function(file1, file2,
 
   last_end <- pairs[[length(pairs)]][2]
   tail <- if (last_end < nchar(text)) substr(text, last_end + 1L, nchar(text)) else ""
-  tt <- .rtf_tokens(tail); pi <- which(tt$type == "control" & tt$control == "par")
+  tt <- .rtf_tokens(tail); pi <- .rtf_visible_control_indices(tt, "par", tail)
   paras <- list(); cursor <- 1L
   if (length(pi)) for (j in seq_along(pi)) {
     raw <- substr(tail, cursor, tt$end[pi[j]])
@@ -1171,12 +1218,15 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   base <- file.path(tool_root, "logs", "RTF Changes")
   out <- c(file.path(base, "Set 1", .change_relative_path(relative1)),
            file.path(base, "Set 2", .change_relative_path(relative2)))
+  # Create both sides together. If validation fails, users still see a
+  # symmetric destination instead of a misleading Set 1-only partial run.
+  for (destination in unique(dirname(out)))
+    dir.create(destination, recursive = TRUE, showWarnings = FALSE)
   # Validate both temporary documents before either final path is installed.
   txt <- c(.render_change_document(model, 1L), .render_change_document(model, 2L))
   tmps <- character(2L)
   on.exit(unlink(tmps[file.exists(tmps)]), add = TRUE)
   for (i in 1:2) {
-    dir.create(dirname(out[i]), recursive = TRUE, showWarnings = FALSE)
     tmps[i] <- tempfile(pattern = paste0(".", basename(out[i]), "."),
                         tmpdir = dirname(out[i]), fileext = ".tmp")
     .write_rtf_text(txt[i], tmps[i]); .validate_change_output(tmps[i], model)

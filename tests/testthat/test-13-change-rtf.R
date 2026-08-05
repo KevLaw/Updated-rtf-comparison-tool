@@ -18,6 +18,27 @@
   destination
 }
 
+.add_hidden_table_controls <- function(source, destination,
+                                       mode = c("extra_cells", "early_row")) {
+  mode <- match.arg(mode)
+  text <- readLines(source, warn = FALSE)
+  if (mode == "extra_cells") {
+    # Mirrors screenshot4's common expected 4 / found 7 failure: stale cell
+    # controls retained in an ignorable SAS/Word row-properties destination.
+    text <- sub("Placebo\\cell",
+                "{\\*\\oldcprops \\cell\\cell\\cell}Placebo\\cell",
+                text, fixed = TRUE)
+  } else {
+    # Mirrors screenshot4's expected 4 / found 1 and malformed-root failures:
+    # a hidden row terminator must not close the displayed row early.
+    text <- sub("Placebo\\cell",
+                "Placebo\\cell{\\*\\oldcprops \\row\\trowd\\par\\clmgf}",
+                text, fixed = TRUE)
+  }
+  writeLines(text, destination, useBytes = TRUE)
+  destination
+}
+
 test_that("the existing test suite can generate valid tabular RTF output", {
   g <- .new_change_fixture("generator_capability")
   expect_true(all(file.exists(g$files)))
@@ -210,6 +231,53 @@ test_that("hidden RTF destinations do not invalidate displayed-cell mapping", {
     expect_match(.read_rtf_text(path), "bkmkstart internal-bookmark", fixed = TRUE)
     expect_false(any(grepl("internal-bookmark", parse_rtf(path)$raw_value, fixed = TRUE)))
   }
+})
+
+test_that("hidden table controls are excluded from visible row structure", {
+  d <- file.path(tempdir(), paste0("hidden_table_controls_",
+                                   as.integer(runif(1, 1, 1e9))))
+  dir.create(d, recursive = TRUE)
+  for (mode in c("extra_cells", "early_row")) {
+    side1 <- file.path(d, mode, "set1.rtf")
+    side2 <- file.path(d, mode, "set2.rtf")
+    dir.create(dirname(side1), recursive = TRUE)
+    .add_hidden_table_controls(fx("value_diff_A.rtf"), side1, mode)
+    .add_hidden_table_controls(fx("value_diff_B.rtf"), side2, mode)
+
+    expect_silent(.rtf_parse_change_document(side1))
+    result <- compare_rtf(side1, side2, console = FALSE)
+    written <- write_change_rtf_pair(side1, side2, result,
+                                     file.path(d, paste0("tool_", mode)))
+    expect_equal(nrow(written), 2L)
+    expect_true(all(written$ok))
+    expect_true(all(file.exists(written$output)))
+    for (path in written$output) {
+      expect_silent(.validate_rtf_container(.read_rtf_text(path), path))
+      expect_match(.read_rtf_text(path), "oldcprops", fixed = TRUE)
+    }
+  }
+})
+
+test_that("a failed pair validation creates both destination folders and no partial RTF", {
+  d <- file.path(tempdir(), paste0("symmetric_change_dirs_",
+                                   as.integer(runif(1, 1, 1e9))))
+  result <- compare_rtf(fx("value_diff_A.rtf"), fx("value_diff_B.rtf"),
+                        console = FALSE)
+  target_env <- environment(write_change_rtf_pair)
+  original_validator <- get(".validate_change_output", envir = target_env)
+  on.exit(assign(".validate_change_output", original_validator, envir = target_env),
+          add = TRUE)
+  assign(".validate_change_output",
+         function(...) stop("forced validation failure", call. = FALSE),
+         envir = target_env)
+
+  expect_error(write_change_rtf_pair(fx("value_diff_A.rtf"),
+                                     fx("value_diff_B.rtf"), result, d),
+               "forced validation failure", fixed = TRUE)
+  base <- file.path(d, "logs", "RTF Changes")
+  expect_true(dir.exists(file.path(base, "Set 1")))
+  expect_true(dir.exists(file.path(base, "Set 2")))
+  expect_length(list.files(base, pattern = "\\.rtf$", recursive = TRUE), 0L)
 })
 
 test_that("a batch of hidden-destination tables generates every accepted pair", {
