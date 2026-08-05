@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 45
 
     env:
-      RTF_GENERATE_CHANGES: "yes"
       RTF_TOOL_ROOT: ${{ github.workspace }}
 
     steps:
@@ -52,6 +51,7 @@ jobs:
       - name: Exercise path runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           @($set1, $set2, "", "") | Set-Content -Encoding utf8 ".ci/path-input.txt"
@@ -73,6 +73,7 @@ jobs:
       - name: Exercise file-picker runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path "examples/clinical_table_base.rtf").Path
           $set2 = (Resolve-Path "examples/clinical_table_changed.rtf").Path
           $process = Start-Process -FilePath (Get-Command Rscript).Source `
@@ -93,6 +94,7 @@ jobs:
       - name: Exercise folder runner without dialogs
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           $set1 = (Resolve-Path ".ci/set1").Path
           $set2 = (Resolve-Path ".ci/set2").Path
           $process = Start-Process -FilePath (Get-Command Rscript).Source `
@@ -113,6 +115,7 @@ jobs:
       - name: Exercise all accepted pairs in one Windows folder run
         shell: pwsh
         run: |
+          $env:RTF_GENERATE_CHANGES = "yes"
           New-Item -ItemType Directory -Force -Path ".ci/multi-set1", ".ci/multi-set2" | Out-Null
           Copy-Item "tests/testthat/fixtures/value_diff_A.rtf" ".ci/multi-set1/exact_table.rtf"
           Copy-Item "tests/testthat/fixtures/value_diff_B.rtf" ".ci/multi-set2/exact_table.rtf"
