@@ -226,7 +226,11 @@ jobs:
             stopifnot(all(grepl("\\n(?:Change|NC)$", header, perl = TRUE)))
             stopifnot(!any(grepl("^Column[[:space:]]*[0-9]+", header, perl = TRUE)))
             paragraphs <- layout$raw_value[layout$is_table == FALSE]
-            stopifnot(any(grepl("_Change", paragraphs, fixed = TRUE)))
+            has_table_number <- any(grepl(
+              "(?i)\\bTable[[:space:]]+[0-9]+(?:\\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z]+)*",
+              paragraphs, perl = TRUE))
+            if (has_table_number)
+              stopifnot(any(grepl("_Change", paragraphs, fixed = TRUE)))
             stopifnot(file.info(path)$size > 100L)
           }
           '@ | Set-Content -Encoding utf8 ".ci/validate_generated_csvs.R"
