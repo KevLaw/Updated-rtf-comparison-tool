@@ -89,6 +89,20 @@ test_that("inserted text is safely RTF escaped and decodes unchanged", {
   expect_equal(.rtf_decode_span(sub("\\\\cell$", "", raw))$text, value)
 })
 
+test_that("change decoder follows rendered RTF destinations and special controls", {
+  raw <- paste0(
+    "{\\*\\bkmkstart hidden-bookmark}",
+    "Visible\\line Next\\tab Value\\emspace End"
+  )
+  decoded <- .rtf_decode_span(raw)
+  expect_equal(decoded$text, "Visible\nNext\tValue\u2003End")
+  expect_false(any(grepl("hidden-bookmark", decoded$text, fixed = TRUE)))
+
+  replaced <- .rtf_replace_visible(raw, "Replacement")
+  expect_match(replaced, "bkmkstart hidden-bookmark", fixed = TRUE)
+  expect_equal(.rtf_decode_span(replaced)$text, "Replacement")
+})
+
 test_that("paired RTF outputs share one union row order with only-in markers", {
   gen <- new.env(parent = globalenv())
   sys.source(file.path(RTF_ROOT, "R", "generate_test_data.R"), gen)

@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.5.1"
+RTF_TOOL_VERSION <- "1.5.2"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -531,48 +531,120 @@ compare_rtf <- function(file1, file2,
   z
 }
 
+.rtf_destination_names <- local({
+  cached <- NULL
+  function() {
+    if (is.null(cached)) {
+      # Use the same destination vocabulary as the authoritative striprtf
+      # parser. The fallback covers the common hidden groups if that package
+      # ever stops exposing its internal vocabulary.
+      cached <<- tryCatch(
+        get(".destinations", envir = asNamespace("striprtf"), inherits = FALSE),
+        error = function(e) c(
+          "bkmkend", "bkmkstart", "colortbl", "field", "filetbl", "fonttbl",
+          "footer", "footnote", "header", "info", "listtable", "pict",
+          "stylesheet", "tc", "upr", "userprops"
+        )
+      )
+    }
+    cached
+  }
+})
+
 .rtf_decode_span <- function(text) {
   tok <- .rtf_tokens(text)
-  out <- character(); visible <- logical(nrow(tok)); skip <- 0L
-  uc <- 1L
+  out <- character(); visible <- logical(nrow(tok)); fallback <- 0L
+  destinations <- .rtf_destination_names()
+  # RTF properties are scoped by braces. A destination group is non-rendered
+  # metadata (for example {\*\bkmkstart ...}); its plain text must never be
+  # mistaken for displayed cell content or removed during replacement.
+  stack <- list(list(skip = FALSE, uc = 1L, leading = TRUE))
   for (i in seq_len(nrow(tok))) {
+    if (tok$type[i] == "group_start") {
+      parent <- stack[[length(stack)]]
+      stack[[length(stack) + 1L]] <- list(skip = parent$skip, uc = parent$uc,
+                                         leading = TRUE)
+      next
+    }
+    if (tok$type[i] == "group_end") {
+      if (length(stack) > 1L) stack <- stack[-length(stack)]
+      next
+    }
+    state_index <- length(stack); state <- stack[[state_index]]
     piece <- ""
     if (tok$type[i] == "text") {
       piece <- substr(text, tok$start[i], tok$end[i])
       piece <- gsub("[\r\n]", "", piece)
-      if (skip > 0L && nzchar(piece)) {
+      if (nzchar(piece)) {
+        state$leading <- FALSE; stack[[state_index]] <- state
+      }
+      if (state$skip) next
+      if (fallback > 0L && nzchar(piece)) {
         chars <- strsplit(piece, "", fixed = TRUE)[[1]]
-        take <- min(skip, length(chars)); skip <- skip - take
+        take <- min(fallback, length(chars)); fallback <- fallback - take
         piece <- paste0(chars[-seq_len(take)], collapse = "")
       }
     } else if (tok$type[i] == "control") {
       ctl <- tok$control[i]; prm <- tok$param[i]
+      if (state$leading) {
+        if (ctl == "*" || ctl %in% destinations) state$skip <- TRUE
+        state$leading <- FALSE; stack[[state_index]] <- state
+      }
+      if (state$skip) next
       if (ctl == "uc" && nzchar(prm)) {
-        uc <- suppressWarnings(as.integer(prm)); if (is.na(uc) || uc < 0L) uc <- 1L
+        state$uc <- suppressWarnings(as.integer(prm))
+        if (is.na(state$uc) || state$uc < 0L) state$uc <- 1L
+        stack[[state_index]] <- state
       } else if (ctl == "u" && nzchar(prm)) {
         cp <- suppressWarnings(as.integer(prm))
         if (is.na(cp)) stop("Invalid RTF Unicode escape.", call. = FALSE)
         if (cp < 0L) cp <- cp + 65536L
-        piece <- intToUtf8(cp); skip <- uc
+        piece <- intToUtf8(cp); fallback <- state$uc
+      } else if (fallback > 0L && ctl %in% c("'", "~", "_", "-", "\\", "{", "}")) {
+        fallback <- fallback - 1L
       } else if (ctl == "'") piece <- .rtf_hex_char(prm)
       else if (ctl %in% c("\\", "{", "}")) piece <- ctl
       else if (ctl == "~") piece <- "\u00a0"
       else if (ctl == "_") piece <- "\u2011"
-      else if (ctl == "line") piece <- "\n"
-      else if (ctl == "tab") piece <- "\t"
-      else if (ctl == "emdash") piece <- "\u2014"
-      else if (ctl == "endash") piece <- "\u2013"
-      else if (ctl == "bullet") piece <- "\u2022"
-      else if (ctl == "lquote") piece <- "\u2018"
-      else if (ctl == "rquote") piece <- "\u2019"
-      else if (ctl == "ldblquote") piece <- "\u201c"
-      else if (ctl == "rdblquote") piece <- "\u201d"
+      else {
+        specials <- c(
+          bullet = "\u2022", emdash = "\u2014", emspace = "\u2003",
+          endash = "\u2013", enspace = "\u2002", ldblquote = "\u201c",
+          line = "\n", lquote = "\u2018",
+          qmspace = "\u2005", rdblquote = "\u201d", rquote = "\u2019",
+          tab = "\t"
+        )
+        if (ctl %in% names(specials)) piece <- unname(specials[[ctl]])
+      }
     }
     if (nzchar(piece)) {
       out <- c(out, piece); visible[i] <- TRUE
     }
   }
   list(text = paste0(out, collapse = ""), tokens = tok, visible = visible)
+}
+
+.rtf_strip_row_values <- function(raw, source_text = "") {
+  .need_pkg("striprtf")
+  CELL <- ""
+  charset <- regmatches(source_text,
+    regexpr("\\\\(?:ansi|mac|pc|pca)(?![A-Za-z])", source_text, perl = TRUE))
+  codepage <- regmatches(source_text,
+    regexpr("\\\\ansicpg[0-9]+", source_text, perl = TRUE))
+  uc <- regmatches(source_text,
+    regexpr("\\\\uc[0-9]+", source_text, perl = TRUE))
+  if (!length(charset) || !nzchar(charset)) charset <- "\\ansi"
+  if (!length(codepage)) codepage <- ""
+  if (!length(uc)) uc <- "\\uc1"
+  wrapped <- paste0("{\\rtf1", charset, codepage, uc, " ", raw, "}")
+  parsed <- tryCatch(
+    striprtf::strip_rtf(wrapped, row_start = "", row_end = "", cell_end = CELL,
+                        ignore_tables = FALSE),
+    error = function(e) character()
+  )
+  if (!length(parsed)) return(character())
+  value <- paste0(parsed, collapse = "")
+  strsplit(value, CELL, fixed = TRUE)[[1]]
 }
 
 .rtf_escape_insert <- function(x) {
@@ -672,9 +744,12 @@ compare_rtf <- function(file1, file2,
     raw <- substr(text, pairs[[i]][1], pairs[[i]][2])
     expected <- layout[is_table == TRUE & row_index == table_ids[i], raw_value]
     rp <- .rtf_row_parts(raw, length(expected))
-    if (!identical(enc2utf8(rp$values), enc2utf8(expected)))
-      stop(sprintf("Displayed cell mapping did not validate for row %d of '%s'.", i, path),
-           call. = FALSE)
+    if (!identical(enc2utf8(rp$values), enc2utf8(expected))) {
+      authoritative <- .rtf_strip_row_values(raw, text)
+      if (!identical(enc2utf8(authoritative), enc2utf8(expected)))
+        stop(sprintf(paste0("Displayed cell mapping did not validate for row %d of '%s' ",
+                            "with either RTF decoder."), i, path), call. = FALSE)
+    }
     gap <- if (i == 1L) "" else substr(text, pairs[[i - 1L]][2] + 1L,
                                         pairs[[i]][1] - 1L)
     rows[[i]] <- list(raw = raw, gap = gap, values = expected, row_index = table_ids[i])
