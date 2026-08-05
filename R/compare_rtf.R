@@ -28,7 +28,7 @@
 # cross-check. Each is loaded with a clear, actionable error message.
 
 # Tool version, stamped into the audit log so a run can be traced to a build.
-RTF_TOOL_VERSION <- "1.6.0"
+RTF_TOOL_VERSION <- "1.6.1"
 
 .need_pkg <- function(pkg, why = "") {
   if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -1350,6 +1350,184 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   if (length(x) < n) c(x, rep("", n - length(x))) else x[seq_len(n)]
 }
 
+.change_csv_row_specs <- function(path, layout) {
+  text <- .read_rtf_text(path)
+  tok <- .rtf_tokens(text)
+  starts <- .rtf_visible_control_indices(tok, "trowd", text)
+  ends <- .rtf_visible_control_indices(tok, "row", text)
+  if (!length(starts) || !length(ends)) return(NULL)
+
+  pairs <- list(); used <- rep(FALSE, length(ends))
+  for (s in starts) {
+    candidates <- which(ends > s & !used)
+    if (!length(candidates)) return(NULL)
+    end_position <- candidates[[1]]
+    e <- ends[[end_position]]; used[[end_position]] <- TRUE
+    pairs[[length(pairs) + 1L]] <- c(tok$start[[s]], tok$end[[e]])
+  }
+  table_ids <- unique(layout$row_index[layout$is_table == TRUE])
+  if (length(pairs) != length(table_ids)) return(NULL)
+
+  specs <- vector("list", length(pairs))
+  for (i in seq_along(pairs)) {
+    raw <- substr(text, pairs[[i]][[1]], pairs[[i]][[2]])
+    rt <- .rtf_tokens(raw)
+    cell_markers <- .rtf_visible_control_indices(rt, "cell", raw)
+    definition_end <- if (length(cell_markers)) rt$start[[cell_markers[[1]]]] - 1L else nchar(raw)
+    definition <- if (definition_end > 0L) substr(raw, 1L, definition_end) else ""
+    dt <- .rtf_tokens(definition)
+    cx <- .rtf_visible_control_indices(dt, "cellx", definition)
+    values <- layout[is_table == TRUE & row_index == table_ids[[i]], raw_value]
+    if (!length(cx) || length(cx) != length(values)) return(NULL)
+
+    merge_first <- merge_cont <- logical(length(cx))
+    previous <- 0L
+    for (j in seq_along(cx)) {
+      controls <- if (cx[[j]] > previous + 1L)
+        dt$control[(previous + 1L):(cx[[j]] - 1L)] else character()
+      merge_first[[j]] <- "clmgf" %in% controls
+      merge_cont[[j]] <- "clmrg" %in% controls
+      previous <- cx[[j]]
+    }
+    rights <- suppressWarnings(as.integer(dt$param[cx]))
+    if (anyNA(rights) || is.unsorted(rights, strictly = TRUE)) return(NULL)
+    specs[[i]] <- list(
+      values = enc2utf8(values), rights = rights,
+      merge_first = merge_first, merge_cont = merge_cont,
+      trhdr = length(.rtf_visible_control_indices(dt, "trhdr", definition)) > 0L)
+  }
+  specs
+}
+
+.change_csv_canonical_rights <- function(specs) {
+  signatures <- vapply(specs, function(x) paste(x$rights, collapse = ","), character(1))
+  counts <- table(signatures)
+  candidates <- names(counts)[counts == max(counts)]
+  lengths <- vapply(candidates, function(x)
+    if (!nzchar(x)) 0L else length(strsplit(x, ",", fixed = TRUE)[[1]]), integer(1))
+  chosen <- candidates[[which.max(lengths)]]
+  specs[[match(chosen, signatures)]]$rights
+}
+
+.change_csv_physical_map <- function(spec, canonical) {
+  lefts <- c(0L, head(spec$rights, -1L))
+  starts <- match(lefts, c(0L, canonical))
+  ends <- match(spec$rights, canonical)
+  if (anyNA(starts) || anyNA(ends) || any(starts > ends)) return(NULL)
+  data.frame(start = starts, end = ends, stringsAsFactors = FALSE)
+}
+
+.change_csv_header_subrow <- function(values) {
+  values <- .rtf_norm(values)
+  values <- values[nzchar(values)]
+  length(values) > 0L && all(grepl(
+    "^(?:n|N|\\(%\\)|%|n[[:space:]]*\\(%\\)|count|counts|percent|percentage)$",
+    values, perl = TRUE))
+}
+
+.change_csv_header_plan <- function(rows, specs, canonical) {
+  n <- length(rows)
+  signatures <- vapply(rows, function(r)
+    paste(.rtf_norm(r$values), collapse = "\u001e"), character(1))
+  initial <- 1L
+  if (!is.null(specs) && any(vapply(specs, `[[`, logical(1), "trhdr"))) {
+    initial <- which(vapply(specs, `[[`, logical(1), "trhdr"))
+    first_body <- which(!vapply(specs, `[[`, logical(1), "trhdr"))
+    if (length(first_body)) initial <- initial[initial < first_body[[1]]]
+    if (!length(initial)) initial <- 1L
+  } else if (n > 1L) {
+    i <- 2L
+    while (i <= n && .change_csv_header_subrow(rows[[i]]$values)) {
+      initial <- c(initial, i); i <- i + 1L
+    }
+  }
+  next_row <- max(initial) + 1L
+  while (next_row <= n && .change_csv_header_subrow(rows[[next_row]]$values)) {
+    initial <- c(initial, next_row); next_row <- next_row + 1L
+  }
+  header_signatures <- unique(signatures[initial])
+  is_header <- signatures %in% header_signatures
+  if (!is.null(specs) && any(vapply(specs, `[[`, logical(1), "trhdr")))
+    is_header <- is_header | vapply(specs, `[[`, logical(1), "trhdr")
+
+  physical_n <- length(canonical)
+  maps <- if (is.null(specs)) NULL else lapply(specs, .change_csv_physical_map,
+                                               canonical = canonical)
+  usable_maps <- !is.null(maps) && all(vapply(maps, Negate(is.null), logical(1)))
+  top_values <- rep("", physical_n)
+  top_map <- if (usable_maps) maps[[initial[[1]]]] else
+    data.frame(start = seq_len(length(rows[[initial[[1]]]]$values)),
+               end = seq_len(length(rows[[initial[[1]]]]$values)))
+  top_raw <- rows[[initial[[1]]]]$values
+  for (j in seq_len(min(nrow(top_map), length(top_raw))))
+    top_values[[top_map$start[[j]]]] <- top_raw[[j]]
+
+  explicit_merge <- !is.null(specs) &&
+    any(specs[[initial[[1]]]]$merge_first | specs[[initial[[1]]]]$merge_cont)
+  wide_cells <- any(top_map$end > top_map$start)
+  multi_level <- length(initial) > 1L
+  if (explicit_merge) {
+    flags <- specs[[initial[[1]]]]$merge_cont
+    group_starts <- top_map$start[!flags]
+  } else if (wide_cells) {
+    group_starts <- top_map$start
+  } else if (multi_level) {
+    group_starts <- sort(unique(c(1L, which(nzchar(.rtf_norm(top_values))))))
+  } else {
+    group_starts <- seq_len(physical_n)
+  }
+  group_starts <- sort(unique(group_starts[group_starts >= 1L & group_starts <= physical_n]))
+  group_ends <- c(group_starts[-1L] - 1L, physical_n)
+  groups <- Map(function(a, b) seq.int(a, b), group_starts, group_ends)
+
+  components <- matrix("", nrow = length(initial), ncol = physical_n)
+  for (h in seq_along(initial)) {
+    idx <- initial[[h]]; vals <- rows[[idx]]$values
+    mp <- if (usable_maps) maps[[idx]] else
+      data.frame(start = seq_len(length(vals)), end = seq_len(length(vals)))
+    for (j in seq_len(min(nrow(mp), length(vals))))
+      components[h, mp$start[[j]]] <- vals[[j]]
+  }
+  labels <- vapply(groups, function(g) {
+    lines <- vapply(seq_len(nrow(components)), function(h) {
+      z <- components[h, g]
+      z <- z[nzchar(.rtf_norm(z))]
+      paste(z, collapse = " ")
+    }, character(1))
+    lines <- lines[nzchar(.rtf_norm(lines))]
+    paste(unique(lines), collapse = "\n")
+  }, character(1))
+  list(is_header = is_header, initial = initial, groups = groups,
+       components = components, labels = enc2utf8(labels), maps = maps,
+       physical_ncol = physical_n, grouped = any(lengths(groups) > 1L))
+}
+
+.change_csv_physical_values <- function(values, map, n) {
+  out <- rep("", n)
+  if (is.null(map)) return(.pad_change_values(values, n))
+  for (j in seq_len(min(length(values), nrow(map)))) out[[map$start[[j]]]] <- values[[j]]
+  out
+}
+
+.change_csv_combine_body <- function(values, positions, components) {
+  z <- values[positions]
+  subheaders <- if (nrow(components) > 1L)
+    apply(components[-1L, positions, drop = FALSE], 2L, paste, collapse = " ") else
+    rep("", length(positions))
+  percent_column <- grepl("%", subheaders, fixed = TRUE)
+  if (!any(percent_column) && length(positions) > 1L &&
+      any(grepl("%", components[, positions, drop = FALSE], fixed = TRUE)))
+    percent_column[[length(percent_column)]] <- TRUE
+  for (i in seq_along(z)) {
+    if (percent_column[[i]] &&
+        grepl("^\\s*\\([+-]?[0-9,.]+\\)\\s*$", z[[i]], perl = TRUE) &&
+        !grepl("%", z[[i]], fixed = TRUE))
+      z[[i]] <- sub("\\)\\s*$", "%)", z[[i]], perl = TRUE)
+  }
+  z <- z[nzchar(.rtf_norm(z))]
+  if (!length(z)) "" else paste(z, collapse = " ")
+}
+
 .parse_change_csv_document <- function(path) {
   layout <- .rtf_cell_layout(path)
   table_ids <- unique(layout[is_table == TRUE, row_index])
@@ -1362,16 +1540,32 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   rows <- lapply(seq_along(raw_rows), function(i) list(
     raw = "", values = .pad_change_values(raw_rows[[i]], ncol),
     row_index = table_ids[[i]], is_header = FALSE))
-  signature <- vapply(rows, function(r)
-    paste(.rtf_norm(r$values), collapse = "\u001e"), character(1))
-  is_header <- signature == signature[[1]]
-  for (i in seq_along(rows)) rows[[i]]$is_header <- is_header[[i]]
+
+  specs <- .change_csv_row_specs(path, layout)
+  canonical <- if (is.null(specs)) seq_len(ncol) else .change_csv_canonical_rights(specs)
+  plan <- .change_csv_header_plan(rows, specs, canonical)
+  for (i in seq_along(rows)) {
+    physical <- .change_csv_physical_values(
+      raw_rows[[i]], if (is.null(plan$maps)) NULL else plan$maps[[i]],
+      plan$physical_ncol)
+    if (plan$is_header[[i]]) {
+      rows[[i]]$values <- plan$labels
+    } else {
+      rows[[i]]$values <- vapply(plan$groups, .change_csv_combine_body,
+                                 character(1), values = physical,
+                                 components = plan$components)
+    }
+    rows[[i]]$is_header <- plan$is_header[[i]]
+  }
+  ncol <- length(plan$groups)
 
   title_values <- layout[is_table == FALSE & row_index < min(table_ids), raw_value]
   foot_values <- layout[is_table == FALSE & row_index > max(table_ids), raw_value]
   list(path = path, rows = rows, ncol = ncol,
        titles = enc2utf8(title_values[nzchar(.rtf_norm(title_values))]),
-       tail_paras = lapply(enc2utf8(foot_values), function(x) list(raw = "", value = x)))
+       tail_paras = lapply(enc2utf8(foot_values), function(x) list(raw = "", value = x)),
+       csv_groups = plan$groups, csv_grouped = plan$grouped,
+       physical_ncol = plan$physical_ncol)
 }
 
 .pad_change_csv_document <- function(doc, ncol) {
@@ -1397,8 +1591,6 @@ write_change_rtf_pair <- function(file1, file2, result, tool_root,
   header_rows <- doc$rows[vapply(doc$rows, `[[`, logical(1), "is_header")]
   header <- .pad_change_values(header_rows[[1]]$values,
                                length(model$header_labels))
-  empty <- !nzchar(.rtf_norm(header))
-  header[empty] <- paste("Column", which(empty))
   column_names <- paste0(header, "\n", model$header_labels)
   ncol <- length(column_names)
   one_column_row <- function(value)

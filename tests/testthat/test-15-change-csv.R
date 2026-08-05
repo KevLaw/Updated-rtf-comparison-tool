@@ -29,6 +29,47 @@
   path
 }
 
+.csv_grouped_rtf <- function(path, rows, style = c("merged", "wide"),
+                             title = "Table 99.2 Grouped Header Synthetic",
+                             repeat_header = FALSE, use_trhdr = TRUE,
+                             subheader_trhdr = use_trhdr) {
+  style <- match.arg(style)
+  full_cellx <- paste0("\\cellx", c(2100, 3600, 4600, 5600, 6600, 7600, 8600, 9600),
+                       collapse = "")
+  if (style == "merged") {
+    top_props <- paste0("\\cellx2100\\cellx3600",
+      "\\clmgf\\cellx4600\\clmrg\\cellx5600",
+      "\\clmgf\\cellx6600\\clmrg\\cellx7600",
+      "\\clmgf\\cellx8600\\clmrg\\cellx9600")
+    top_values <- c("", "Outcome", "MK-2140 2.5 mg/kg Q3W", "",
+                    "MK-2140 2.25 mg/kg Q3W", "", "MK-2140 Total", "")
+  } else {
+    top_props <- paste0("\\cellx2100\\cellx3600\\cellx5600\\cellx7600\\cellx9600")
+    top_values <- c("", "Outcome", "MK-2140 2.5 mg/kg Q3W",
+                    "MK-2140 2.25 mg/kg Q3W", "MK-2140 Total")
+  }
+  render <- function(props, values, repeat_on_page = FALSE) paste0(
+    "\\trowd", if (repeat_on_page) "\\trhdr" else "", props,
+    "\\pard\\intbl\\plain\\f0\\fs18 ",
+    paste0(vapply(values, .rtf_escape_insert, character(1)), "\\cell", collapse = " "),
+    "\\row")
+  top <- render(top_props, top_values, use_trhdr)
+  sub <- render(full_cellx, c("", "", "n", "(%)", "n", "(%)", "n", "(%)"),
+                subheader_trhdr)
+  body <- vapply(rows, function(x) render(full_cellx, x), character(1))
+  if (repeat_header && length(body) > 2L)
+    body <- append(body, c(top, sub), after = floor(length(body) / 2L))
+  writeLines(c(
+    "{\\rtf1\\ansi\\ansicpg1252\\deff0",
+    "{\\fonttbl{\\f0\\fnil\\fcharset0 Arial;}}",
+    paste0("\\pard\\plain\\f0\\fs20 ", .rtf_escape_insert(title), "\\par"),
+    top, sub, body,
+    "\\pard\\plain\\f0\\fs18 Source: synthetic grouped-header regression.\\par",
+    "}"
+  ), path, useBytes = TRUE)
+  path
+}
+
 .csv_change_fixture <- function(tag = "csv_change") {
   source(file.path(RTF_ROOT, "R", "generate_test_data.R"), local = TRUE)
   d <- file.path(tempdir(), paste0(tag, "_", as.integer(runif(1, 1, 1e9))))
@@ -112,10 +153,103 @@ test_that("different source column counts are padded and remain reviewable", {
   set2 <- .read_change_csv(written$output[[2]])
   expect_equal(ncol(set1), 3L)
   expect_equal(ncol(set2), 3L)
-  expect_equal(names(set1)[3], "Column 3\nChange")
+  expect_equal(names(set1)[3], "\nChange")
   expect_equal(names(set2)[3], "New Metric\nChange")
   row <- set1[set1[[1]] == "Headache", , drop = FALSE]
   expect_equal(unname(as.character(row[1, ])), c("Headache", "(+2, -1%)", "CHG"))
+})
+
+test_that("merged n and percent subcolumns become one correctly headed CSV column", {
+  for (style in c("merged", "wide")) {
+    d <- file.path(tempdir(), paste0("csv_grouped_", style, "_",
+                                     as.integer(runif(1, 1, 1e9))))
+    dir.create(d, recursive = TRUE)
+    set1_rows <- list(
+      c("Participants in population", "", "261", "", "53", "", "375", ""),
+      c("With one or more AEOSI", "Overall", "236", "(90.4)",
+        "44", "(83.0)", "333", "(88.8)"),
+      c("Anaemia", "Overall", "80", "(30.7)", "11", "(20.8)", "112", "(29.9)"))
+    set2_rows <- list(
+      c("Participants in population", "", "262", "", "53", "", "376", ""),
+      c("With one or more AEOSI", "Overall", "238", "(90.8)",
+        "43", "(81.1)", "335", "(89.1)"),
+      c("Anaemia", "Overall", "84", "(32.1)", "11", "(20.8)", "116", "(30.9)"))
+    f1 <- .csv_grouped_rtf(file.path(d, "set1.rtf"), set1_rows, style,
+                           repeat_header = TRUE)
+    f2 <- .csv_grouped_rtf(file.path(d, "set2.rtf"), set2_rows, style,
+                           repeat_header = TRUE)
+    result <- compare_rtf(f1, f2, console = FALSE)
+    written <- write_change_csv_pair(f1, f2, result, file.path(d, "tool"))
+    csv <- .read_change_csv(written$output[[2]])
+
+    expect_equal(ncol(csv), 5L, info = style)
+    expect_false(any(grepl("^Column[[:space:]]*[0-9]+", names(csv))), info = style)
+    expect_equal(names(csv), c(
+      "\nNC", "Outcome\nNC", "MK-2140 2.5 mg/kg Q3W\nn (%)\nChange",
+      "MK-2140 2.25 mg/kg Q3W\nn (%)\nChange",
+      "MK-2140 Total\nn (%)\nChange"), info = style)
+    aeosi <- csv[csv[[1]] == "With one or more AEOSI", , drop = FALSE]
+    expect_equal(unname(as.character(aeosi[1, ])),
+                 c("With one or more AEOSI", "NC", "(+2, +0.4%)",
+                   "(-1, -1.9%)", "(+2, +0.3%)"), info = style)
+    expect_false(any(csv[[1]] == "n" | csv[[1]] == "(%)"), info = style)
+  }
+})
+
+test_that("grouped headers are detected without explicit repeat-header controls", {
+  for (mode in c("none", "top-only")) {
+    d <- file.path(tempdir(), paste0("csv_grouped_", mode, "_",
+                                     as.integer(runif(1, 1, 1e9))))
+    dir.create(d, recursive = TRUE)
+    rows1 <- list(c("Headache", "Overall", "5", "(2.5)", "3", "(1.5)", "8", "(2.0)"))
+    rows2 <- list(c("Headache", "Overall", "7", "(3.5)", "3", "(1.5)", "10", "(2.5)"))
+    top_repeats <- identical(mode, "top-only")
+    f1 <- .csv_grouped_rtf(file.path(d, "a.rtf"), rows1, "wide",
+                           use_trhdr = top_repeats, subheader_trhdr = FALSE)
+    f2 <- .csv_grouped_rtf(file.path(d, "b.rtf"), rows2, "wide",
+                           use_trhdr = top_repeats, subheader_trhdr = FALSE)
+    result <- compare_rtf(f1, f2, console = FALSE)
+    written <- write_change_csv_pair(f1, f2, result, d)
+    csv <- .read_change_csv(written$output[[1]])
+    expect_equal(ncol(csv), 5L, info = mode)
+    expect_equal(csv[csv[[1]] == "Headache", 3][[1]], "(+2, +1%)", info = mode)
+    expect_false(any(grepl("Column", names(csv), fixed = TRUE)), info = mode)
+  }
+})
+
+test_that("40 grouped synthetic pairs create 80 consolidated CSV files", {
+  d <- file.path(tempdir(), paste0("csv_grouped_batch_",
+                                   as.integer(runif(1, 1, 1e9))))
+  d1 <- file.path(d, "set1"); d2 <- file.path(d, "set2")
+  dir.create(d1, recursive = TRUE); dir.create(d2, recursive = TRUE)
+  for (i in 1:40) {
+    nm <- sprintf("grouped_%02d.rtf", i)
+    style <- if (i %% 2L) "merged" else "wide"
+    base_rows <- lapply(1:12, function(j) c(
+      sprintf("Event %02d-%02d", i, j), "Overall",
+      as.character(100L + i + j), sprintf("(%.1f)", 10 + j / 10),
+      as.character(80L + i + j), sprintf("(%.1f)", 8 + j / 10),
+      as.character(180L + 2L * i + 2L * j), sprintf("(%.1f)", 9 + j / 10)))
+    changed_rows <- lapply(base_rows, function(x) {
+      x[c(3, 5, 7)] <- as.character(as.integer(x[c(3, 5, 7)]) + c(1L, 0L, 1L))
+      x[[4]] <- sub("\\)$", "5)", x[[4]])
+      x
+    })
+    .csv_grouped_rtf(file.path(d1, nm), base_rows, style, repeat_header = TRUE)
+    .csv_grouped_rtf(file.path(d2, nm), changed_rows, style, repeat_header = TRUE)
+  }
+  batch <- compare_rtf_folder(d1, d2, console = FALSE, progress = FALSE)
+  expect_equal(nrow(batch$summary), 40L)
+  written <- write_batch_change_csvs(batch, file.path(d, "tool"), progress = FALSE)
+  expect_equal(nrow(written), 80L)
+  expect_true(all(written$ok) && all(file.exists(written$output)))
+  csvs <- lapply(written$output, .read_change_csv)
+  expect_true(all(vapply(csvs, ncol, integer(1)) == 5L))
+  expect_false(any(vapply(csvs, function(x)
+    any(grepl("^Column[[:space:]]*[0-9]+", names(x))), logical(1))))
+  expect_true(all(vapply(csvs, function(x)
+    all(c("MK-2140 2.5 mg/kg Q3W\nn (%)\nChange",
+          "MK-2140 Total\nn (%)\nChange") %in% names(x)), logical(1))))
 })
 
 test_that("CSV round trip preserves Unicode commas quotes leading spaces and newlines", {

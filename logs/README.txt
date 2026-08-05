@@ -50,6 +50,10 @@ What gets written here:
       shown in parentheses beneath "Footnote changes in brackets"; cosmetic
       spacing changes are ignored and Set 1 deletions appear as (missing).
 
+      When one displayed RTF heading spans separate n and (%) physical cells,
+      those cells are consolidated into one semantic CSV column under the
+      displayed heading. Continuation cells are never labeled Column 6, etc.
+
       A file found in only one compared folder never produces a change CSV.
       Exact normalized names pair first. Like names and related filename
       families separated by "0" must also pass a title/Column 1 content gate.
